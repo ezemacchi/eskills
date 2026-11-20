@@ -11,7 +11,7 @@ disable-model-invocation: true
 Everything this skill knows about the site, the project, the board and the field ids comes from the kit configuration (set up with `/setup`). Project knowledge that is not in code (how stories are named, the workflow and its statuses, test-case naming, who files what) is in the project notes: run `notes` once per conversation before answering anything project-specific, and follow it.
 
 ```powershell
-$kit = (Get-Content -Raw (@($env:{{kit.configVar}}, "$env:LOCALAPPDATA\{{kit.name}}\config.json") | Where-Object { $_ })[0] | ConvertFrom-Json).scripts
+$kit = (pwsh -NoProfile -File "{{kit.setupScript}}" scripts) -join "`n" | ConvertFrom-Json
 pwsh -NoProfile -File $kit.board <command> ...
 ```
 

@@ -10,7 +10,7 @@ description: Writes a message to a colleague following their profile (who they a
 The chat service comes from the configuration (the chat capability). Read what is particular to it once per conversation, before writing: `pwsh -NoProfile -File $kit.setup provider -Capability chat` prints its notes (`notes`). People come from the team's directory (the project pack's), overlaid by the person's own additions (`paths.myPeople`), which win for the same alias.
 
 ```powershell
-$kit = (Get-Content -Raw (@($env:{{kit.configVar}}, "$env:LOCALAPPDATA\{{kit.name}}\config.json") | Where-Object { $_ })[0] | ConvertFrom-Json).scripts
+$kit = (pwsh -NoProfile -File "{{kit.setupScript}}" scripts) -join "`n" | ConvertFrom-Json
 pwsh -NoProfile -File $kit.chat people                                   # alias, e-mail, language, what they are asked about, and where the profiles are
 pwsh -NoProfile -File $kit.chat -To <alias or e-mail> -MessageFile <file> -Open   # opens the chat with the message ready
 pwsh -NoProfile -File $kit.chat -To <alias or e-mail> -MessageFile <file> -Copy   # copies it instead

@@ -15,7 +15,7 @@ Three scripts, all read-only, all set up with `/setup`:
 - `$kit.delivery`: whether a ticket or a merged pull request reached each environment. The kit's own logic: git in the code clone, plus what the cd and repo providers say.
 
 ```powershell
-$kit = (Get-Content -Raw (@($env:{{kit.configVar}}, "$env:LOCALAPPDATA\{{kit.name}}\config.json") | Where-Object { $_ })[0] | ConvertFrom-Json).scripts
+$kit = (pwsh -NoProfile -File "{{kit.setupScript}}" scripts) -join "`n" | ConvertFrom-Json
 pwsh -NoProfile -File $kit.ci <command> ...         # status, stages, tail, find, ping
 pwsh -NoProfile -File $kit.cd <command> ...         # environments, targets, publishes, commit-of
 pwsh -NoProfile -File $kit.delivery <command> ...   # ticket, deployed

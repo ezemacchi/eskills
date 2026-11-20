@@ -118,40 +118,51 @@ $fallbackRule = [pscustomobject]@{
     hosts = @(); mcpWriteTools = @(); mcpWritePattern = $defaultWritePattern
 }
 
-# The rules of every provider that is on, and how many lines of a text to show. The person's value
-# wins over their roles' (the first role first), then the project pack's, then the kit's, as in the kit
-# scripts. $null when unreadable.
+# The rules of every provider that is on, in every project the person has (one configuration per project
+# pack, <kit folder>\<pack>\config.json, or one for the kit alone): a write to any of them is confirmed,
+# whatever folder it runs from. How many lines of a text to show comes from the first configuration: the
+# person's value wins over their roles' (the first role first), then the project pack's, then the kit's,
+# as in the kit scripts. $null when none is readable.
 function Read-GuardConfig {
-    $kitName = Get-GuardKitName
-    $override = [Environment]::GetEnvironmentVariable((($kitName.ToUpperInvariant() -replace '[^A-Z0-9]', '_') + '_CONFIG'), 'Process')
-    $userFile = if ($override) { $override } else { Join-Path (Join-Path $env:LOCALAPPDATA $kitName) 'config.json' }
-    try {
-        $userCfg = Get-Content -Raw -Encoding utf8 -LiteralPath $userFile | ConvertFrom-Json
-        $layers = @($userCfg)
-        if ($userCfg.kit.packFile) {
-            # Each of the person's roles, in order (one name, several separated by commas, or a list).
-            foreach ($role in @(@($userCfg.user.role) | ForEach-Object { [string]$_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^[A-Za-z0-9_-]+$' })) {
-                $roleFile = Join-Path (Split-Path -Parent ([string]$userCfg.kit.packFile)) "roles\$role.json"
-                if (Test-Path -LiteralPath $roleFile -PathType Leaf) { $layers += Get-Content -Raw -Encoding utf8 -LiteralPath $roleFile | ConvertFrom-Json }
+    $prefix = (Get-GuardKitName).ToUpperInvariant() -replace '[^A-Z0-9]', '_'
+    $override = [Environment]::GetEnvironmentVariable("${prefix}_CONFIG", 'Process')
+    $kitRoot = [Environment]::GetEnvironmentVariable("${prefix}_HOME", 'Process')
+    if (-not $kitRoot) { $kitRoot = Join-Path $env:LOCALAPPDATA (Get-GuardKitName) }
+    $files = if ($override) { @($override) }
+    else { @(@(Join-Path $kitRoot 'config.json') + @(Get-ChildItem -LiteralPath $kitRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object { Join-Path $_.FullName 'config.json' })) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } }
+    $rules = [Collections.Generic.List[object]]::new()
+    $layers = $null
+    foreach ($userFile in @($files)) {
+        try {
+            $userCfg = Get-Content -Raw -Encoding utf8 -LiteralPath $userFile | ConvertFrom-Json
+            if ($null -eq $layers) {
+                $layers = @($userCfg)
+                if ($userCfg.kit.packFile) {
+                    # Each of the person's roles, in order (one name, several separated by commas, or a list).
+                    foreach ($role in @(@($userCfg.user.role) | ForEach-Object { [string]$_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^[A-Za-z0-9_-]+$' })) {
+                        $roleFile = Join-Path (Split-Path -Parent ([string]$userCfg.kit.packFile)) "roles\$role.json"
+                        if (Test-Path -LiteralPath $roleFile -PathType Leaf) { $layers += Get-Content -Raw -Encoding utf8 -LiteralPath $roleFile | ConvertFrom-Json }
+                    }
+                    $layers += Get-Content -Raw -Encoding utf8 -LiteralPath ([string]$userCfg.kit.packFile) | ConvertFrom-Json
+                }
+                $layers += Get-Content -Raw -Encoding utf8 -LiteralPath ([string]$userCfg.kit.defaultsFile) | ConvertFrom-Json
             }
-            $layers += Get-Content -Raw -Encoding utf8 -LiteralPath ([string]$userCfg.kit.packFile) | ConvertFrom-Json
         }
-        $layers += Get-Content -Raw -Encoding utf8 -LiteralPath ([string]$userCfg.kit.defaultsFile) | ConvertFrom-Json
-    }
-    catch { return $null }
-    $rules = @(foreach ($p in @($userCfg.providerInfo.PSObject.Properties)) {
+        catch { continue }
+        foreach ($p in @($userCfg.providerInfo.PSObject.Properties)) {
             $g = $p.Value.guard
             if (-not $g) { continue }
-            [pscustomobject]@{
-                capability = $p.Name; displayName = $(if ($p.Value.displayName) { [string]$p.Value.displayName } else { [string]$p.Value.name })
-                scriptNames = @($g.scriptNames | Where-Object { $_ }); writeCommands = @($g.writeCommands | Where-Object { $_ })
-                hosts = @($g.hosts | Where-Object { $_ }); mcpWriteTools = @($g.mcpWriteTools | Where-Object { $_ })
-                mcpWritePattern = [string]$g.mcpWritePattern
-            }
-        })
+            $rules.Add([pscustomobject]@{
+                    capability = $p.Name; displayName = $(if ($p.Value.displayName) { [string]$p.Value.displayName } else { [string]$p.Value.name })
+                    scriptNames = @($g.scriptNames | Where-Object { $_ }); writeCommands = @($g.writeCommands | Where-Object { $_ })
+                    hosts = @($g.hosts | Where-Object { $_ }); mcpWriteTools = @($g.mcpWriteTools | Where-Object { $_ })
+                    mcpWritePattern = [string]$g.mcpWritePattern
+                })
+        }
+    }
     if (-not $rules.Count) { return $null }
-    $lines = [int](Get-Setting $layers 'guard.previewLines')
-    [pscustomobject]@{ rules = $rules; previewLines = $(if ($lines -gt 0) { $lines } else { 6 }) }
+    $lines = if ($layers) { [int](Get-Setting $layers 'guard.previewLines') } else { 0 }
+    [pscustomobject]@{ rules = @($rules); previewLines = $(if ($lines -gt 0) { $lines } else { 6 }) }
 }
 
 function Get-Setting($Layers, [string]$Dotted) {

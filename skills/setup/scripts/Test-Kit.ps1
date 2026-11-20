@@ -1,4 +1,4 @@
-﻿#Requires -Version 7
+#Requires -Version 7
 <#
 .SYNOPSIS
     Checks the kit: its own files, the person's configuration, and that each script answers.
@@ -129,7 +129,7 @@ function Read-Snippets([string]$File) {
 }
 
 # The line every SKILL.md uses to find the kit's scripts. Install.ps1 fills {{kit.configVar}} and {{kit.name}}.
-$locatorLine = '$kit = (Get-Content -Raw (@($env:{{kit.configVar}}, "$env:LOCALAPPDATA\{{kit.name}}\config.json") | Where-Object { $_ })[0] | ConvertFrom-Json).scripts'
+$locatorLine = '$kit = (pwsh -NoProfile -File "{{kit.setupScript}}" scripts) -join "`n" | ConvertFrom-Json'
 
 function Expand-KitPath([string]$Value) {
     if (-not $Value) { return $Value }
@@ -172,22 +172,37 @@ if ($null -eq $defaults) {
 else {
     Add-Result 'kit' 'defaults' 'ok' $defaultsFile
     $engineKitName = [string]$defaults.kit.name
-    $packFile = if ($Pack) { Join-Path ([IO.Path]::GetFullPath($Pack)) 'pack.json' } else { Join-Path $SkillsRoot 'setup\pack\pack.json' }
+    # The pack to check: -Pack, else the installed pack in use where this runs (the kit picks it by the
+    # current folder's repository, the default, or the only one).
+    $packFile = if ($Pack) { Join-Path ([IO.Path]::GetFullPath($Pack)) 'pack.json' }
+    else {
+        $installedPacks = @(Get-ChildItem -LiteralPath (Join-Path $SkillsRoot 'setup\packs') -Directory -ErrorAction SilentlyContinue | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'pack.json') -PathType Leaf } | ForEach-Object { $_.Name })
+        if ($installedPacks.Count) {
+            $pk = Invoke-Kit (Join-Path $SkillsRoot 'setup\scripts\Initialize-Config.ps1') @('packs')
+            $inUse = if ($pk.code -eq 0) { [string](ConvertFrom-KitJson $pk.out).active } else { '' }
+            if (-not $inUse) { $inUse = $installedPacks[0]; Add-Result 'kit' 'pack' 'warn' "Several packs and none in use here ($($installedPacks -join ', ')): checking $inUse. Run the test from a project's repository to check its pack." }
+            Join-Path $SkillsRoot "setup\packs\$inUse\pack.json"
+        }
+        else { '' }
+    }
     $script:packDir = $null
-    if (Test-Path -LiteralPath $packFile -PathType Leaf) {
+    if ($packFile -and (Test-Path -LiteralPath $packFile -PathType Leaf)) {
         $packCfg = ConvertFrom-KitJson (Get-Content -Raw -Encoding utf8 -LiteralPath $packFile)
         if ($null -eq $packCfg) { Add-Result 'kit' 'pack' 'fail' "Not valid JSON: $packFile" }
         else {
             $defaults = Merge-Object $defaults $packCfg
             $script:packDir = Split-Path -Parent $packFile
             Add-Result 'kit' 'pack' 'ok' "$packFile ($([string]$packCfg.pack.name))"
+            if ($packCfg.PSObject.Properties['kit'] -and $packCfg.kit.PSObject.Properties['name'] -and [string]$packCfg.kit.name -ne $engineKitName) {
+                Add-Result 'kit' 'pack kit.name' 'warn' "The pack sets kit.name ('$($packCfg.kit.name)'), which the installer ignores: the kit keeps its name, $engineKitName. Remove it from pack.json."
+            }
         }
     }
     elseif ($Pack) { Add-Result 'kit' 'pack' 'fail' "No pack.json in $Pack" }
-    $script:kitName = [string]$defaults.kit.name
+    $script:kitName = $engineKitName
     if (-not $HooksFile -and $defaults.kit.agentHosts.$AgentHost) { $HooksFile = Join-Path $env:USERPROFILE ([string]$defaults.kit.agentHosts.$AgentHost.hooksFile) }
     $kitConfigVar = ($kitName.ToUpperInvariant() -replace '[^A-Z0-9]', '_') + '_CONFIG'
-    $renderedLocator = $locatorLine.Replace('{{kit.configVar}}', $kitConfigVar).Replace('{{kit.name}}', $kitName)
+    $renderedLocator = $locatorLine.Replace('{{kit.setupScript}}', (Join-Path $SkillsRoot 'setup\scripts\Initialize-Config.ps1'))
 
     foreach ($skill in @($defaults.kit.skills)) {
         $md = Join-Path $SkillsRoot "$skill\SKILL.md"
@@ -198,11 +213,10 @@ else {
         if (-not ($head | Where-Object { $_ -match '^description:\s*\S' })) { Add-Result 'kit' "skill $skill" 'fail' 'SKILL.md has no description.'; continue }
         $markerFile = Join-Path $SkillsRoot "$skill\.kit"
         if (-not (Test-Path -LiteralPath $markerFile)) { Add-Result 'kit' "skill $skill" 'fail' 'No .kit marker; Install.ps1 would not recognize the folder as the kit''s.'; continue }
-        # In the kit's repository .kit names the engine; Install.ps1 writes the pack's name into an installed copy.
-        $expectedName = if ($Pack) { $engineKitName } else { $kitName }
-        if ((Get-Content -Raw -LiteralPath $markerFile).Trim() -ne $expectedName) { Add-Result 'kit' "skill $skill" 'fail' ".kit does not say '$expectedName' (kit.name); the scripts would read another kit's configuration."; continue }
+        if ((Get-Content -Raw -LiteralPath $markerFile).Trim() -ne $engineKitName) { Add-Result 'kit' "skill $skill" 'fail' ".kit does not say '$engineKitName' (kit.name); the scripts would read another kit's configuration."; continue }
         $mdText = Get-Content -Raw -Encoding utf8 -LiteralPath $md
-        if ($mdText.Contains('ConvertFrom-Json).scripts') -and -not ($mdText.Contains($locatorLine) -or $mdText.Contains($renderedLocator))) {
+        $findsScripts = $mdText.Contains('ConvertFrom-Json).scripts') -or $mdText.Contains(' scripts) -join "`n" | ConvertFrom-Json')
+        if ($findsScripts -and -not ($mdText.Contains($locatorLine) -or $mdText.Contains($renderedLocator))) {
             Add-Result 'kit' "skill $skill" 'fail' "SKILL.md finds the scripts with a line other than the kit's: $locatorLine"; continue
         }
         Add-Result 'kit' "skill $skill" 'ok'
@@ -488,12 +502,14 @@ else {
     foreach ($file in Get-ChildItem -LiteralPath $kitDirs -Recurse -File -Include '*.md', '*.ps1', '*.json', '*.txt') {
         $rel = [IO.Path]::GetRelativePath($SkillsRoot, $file.FullName) -replace '\\', '/'
         if (@($allow | Where-Object { $rel -like $_ }).Count) { continue }
-        if ($file.Name -match '\.kit-new(\.[^.]*)?$' -or $file.Name -eq '.kit-installed.json') { continue }
+        if ($file.Name -match '\.kit-new(\.[^.]*)?$' -or $file.Name -in '.kit-installed.json', '.kit-source.json') { continue }
         # In a person's own edits a configuration value is their choice: a warning, not a failure.
         $lintStatus = if ($editedFiles[$rel]) { 'warn' } else { 'fail' }
         $n = 0
         foreach ($line in Get-Content -Encoding utf8 -LiteralPath $file.FullName) {
             $n++
+            # The line that finds the scripts carries the installed path, which Install.ps1 writes in.
+            if ($line.Contains(' scripts) -join "`n" | ConvertFrom-Json')) { continue }
             foreach ($pat in $patterns) {
                 if ($line -cmatch $pat.regex) {
                     $findings++
@@ -733,6 +749,7 @@ if (-not $Static -and -not $Fake -and $null -ne $defaults) {
 if ($Fake -and $null -ne $defaults) {
     $sandbox = Join-Path ([IO.Path]::GetTempPath()) "kit-fake-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
     $savedConfigVar = [Environment]::GetEnvironmentVariable($kitConfigVar, 'Process')
+    $savedHomeVar = [Environment]::GetEnvironmentVariable(($kitConfigVar -replace '_CONFIG$', '_HOME'), 'Process')
     function Invoke-SandboxGit([string]$Dir, [string[]]$GitArgs) {
         $ErrorActionPreference = 'Continue'
         $gitOut = & git -C $Dir @GitArgs 2>&1
@@ -948,10 +965,92 @@ if ($Fake -and $null -ne $defaults) {
                 Add-Result 'fake' "guard $agent $($probe.want)" $(if ($got -eq $probe.want) { 'ok' } else { 'fail' }) "$($probe.command) -> $got$(if ($agent -eq 'claude' -and $got -eq 'allow') { ' (no answer, so Claude Code''s own permission flow applies)' })"
             }
         }
+
+        # --- The installer and project packs, in a copy of the clone; <KIT>_HOME keeps the person's folders in the sandbox.
+        $installer = Join-Path (Split-Path -Parent $SkillsRoot) 'Install.ps1'
+        if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { Add-Result 'fake' 'install' 'skip' "No Install.ps1 next to ${SkillsRoot}: run the test from the kit's clone to check the installer." }
+        else {
+            $ib = Join-Path $sandbox 'install'
+            $clone2 = Join-Path $ib 'kit'
+            New-Item -ItemType Directory -Force -Path $clone2 | Out-Null
+            Copy-Item -LiteralPath $SkillsRoot -Destination (Join-Path $clone2 'skills') -Recurse
+            Copy-Item -LiteralPath $installer -Destination $clone2
+            $prefix = $kitConfigVar -replace '_CONFIG$', ''
+            [Environment]::SetEnvironmentVariable($kitConfigVar, $null, 'Process')
+            [Environment]::SetEnvironmentVariable("${prefix}_HOME", (Join-Path (Join-Path $ib 'home') $kitName), 'Process')
+            $skills2 = Join-Path $ib 'skills'
+            $hooks2 = Join-Path $ib 'hooks.json'
+            $installArgs = @('-Target', $skills2, '-HooksFile', $hooks2, '-StateRoot', (Join-Path $ib 'state'))
+            $i1 = Invoke-Kit (Join-Path $clone2 'Install.ps1') $installArgs
+            $source2 = Join-Path $skills2 'setup\.kit-source.json'
+            Add-Result 'fake' 'install kit alone' $(if ($i1.code -eq 0 -and (Test-Path -LiteralPath $source2) -and (Get-Content -Raw (Join-Path $skills2 'setup\.kit')).Trim() -eq $kitName) { 'ok' } else { 'fail' }) "exit $($i1.code); install record $(Test-Path -LiteralPath $source2)"
+
+            $setup2 = Join-Path $skills2 'setup\scripts\Initialize-Config.ps1'
+            function New-FakePack([string]$Dir, [string]$Name, [string]$RepoName) {
+                New-Item -ItemType Directory -Force -Path (Join-Path $Dir 'roles') | Out-Null
+                $values = [ordered]@{ pack = @{ name = $Name; description = "The $Name project." }; repos = @(@{ path = 'paths.codeRepo'; name = $RepoName; cloneUrl = "fake://code/x/$RepoName.git"; uses = 'tests' }) }
+                Set-Content -LiteralPath (Join-Path $Dir 'pack.json') -Value ($values | ConvertTo-Json -Depth 5) -Encoding utf8
+                Set-Content -LiteralPath (Join-Path $Dir 'roles\tester.json') -Value '{ "role": { "title": "Tester" } }' -Encoding utf8
+            }
+            $alpha = Join-Path $ib 'alpha-src\alpha-pack'
+            New-FakePack $alpha 'alpha' 'alpha-app'
+            $zip = Join-Path $ib 'alpha-pack.zip'
+            Compress-Archive -Path $alpha -DestinationPath $zip
+            $a1 = Invoke-Kit $setup2 @('add-pack', '-From', $zip)
+            $alphaOk = $a1.code -eq 0 -and (Test-Path -LiteralPath (Join-Path $clone2 'packs\alpha\pack.json')) -and (Test-Path -LiteralPath (Join-Path $skills2 'setup\packs\alpha\pack.json')) -and (Test-Path -LiteralPath (Join-Path $ib "home\$kitName\alpha\config.json"))
+            Add-Result 'fake' 'add pack from a zip' $(if ($alphaOk) { 'ok' } else { 'fail' }) "exit $($a1.code)$(if ($a1.code) { ": $($a1.err)" }); in packs\alpha, installed, and its own configuration"
+
+            $beta = Join-Path $ib 'beta-pack'
+            New-FakePack $beta 'beta' 'beta-app'
+            $b1 = Invoke-Kit $setup2 @('add-pack', '-From', $beta)
+            $both = @(Get-ChildItem -LiteralPath (Join-Path $skills2 'setup\packs') -Directory | ForEach-Object { $_.Name }) -join ','
+            Add-Result 'fake' 'add a second pack' $(if ($b1.code -eq 0 -and $both -eq 'alpha,beta') { 'ok' } else { 'fail' }) "exit $($b1.code)$(if ($b1.code) { ": $($b1.err)" }); installed: $both"
+
+            $work = Join-Path $ib 'work-beta'
+            Invoke-SandboxGit $ib @('init', '-q', $work)
+            Invoke-SandboxGit $work @('remote', 'add', 'origin', 'fake://code/x/beta-app.git')
+            Push-Location $work; try { $inBeta = ConvertFrom-KitJson (Invoke-Kit $setup2 @('packs')).out } finally { Pop-Location }
+            Push-Location $ib; try { $outside = ConvertFrom-KitJson (Invoke-Kit $setup2 @('packs')).out; $noScripts = Invoke-Kit $setup2 @('scripts') } finally { Pop-Location }
+            Add-Result 'fake' 'pack by repository' $(if ($inBeta.active -eq 'beta' -and $inBeta.chosenBy -eq 'repository') { 'ok' } else { 'fail' }) "in a clone of beta-app: $($inBeta.active) ($($inBeta.chosenBy))"
+            Add-Result 'fake' 'pack not chosen' $(if (-not $outside.active -and $outside.chosenBy -eq 'unchosen' -and $noScripts.code -eq 2) { 'ok' } else { 'fail' }) "outside every repository with two packs and no default: $($outside.chosenBy); scripts exit $($noScripts.code)"
+            [void](Invoke-Kit $setup2 @('default-pack', '-Name', 'alpha'))
+            Push-Location $ib; try { $dflt = ConvertFrom-KitJson (Invoke-Kit $setup2 @('packs')).out } finally { Pop-Location }
+            Add-Result 'fake' 'default pack' $(if ($dflt.active -eq 'alpha' -and $dflt.chosenBy -eq 'default') { 'ok' } else { 'fail' }) "outside every repository: $($dflt.active) ($($dflt.chosenBy))"
+
+            $gamma = Join-Path $ib 'gamma-pack'
+            New-FakePack $gamma 'gamma' 'gamma-app'
+            Set-Content -LiteralPath (Join-Path $gamma 'helper.ps1') -Value 'Write-Output hi' -Encoding utf8
+            $g1 = Invoke-Kit $setup2 @('add-pack', '-From', $gamma)
+            Add-Result 'fake' 'pack with a program' $(if ($g1.code -eq 1 -and $g1.err -match 'AllowScripts' -and -not (Test-Path -LiteralPath (Join-Path $clone2 'packs\gamma'))) { 'ok' } else { 'fail' }) "exit $($g1.code): refused until the person agrees"
+
+            $hookEntries = @((Get-Content -Raw $hooks2 | ConvertFrom-Json).hooks.beforeShellExecution | Where-Object { "$($_.command)" -match [regex]::Escape("\hooks\$kitName\") })
+            Add-Result 'fake' 'one guard' $(if ($hookEntries.Count -eq 1) { 'ok' } else { 'fail' }) "$($hookEntries.Count) kit entr$(if ($hookEntries.Count -eq 1) { 'y' } else { 'ies' }) for beforeShellExecution after three installs"
+
+            # An install under an earlier name (a pack used to rename the kit): its folders, its guard and the person's configuration move over.
+            $skills3 = Join-Path $ib 'skills-old'
+            New-Item -ItemType Directory -Force -Path (Join-Path $skills3 'board') | Out-Null
+            Set-Content -LiteralPath (Join-Path $skills3 'board\.kit') -Value 'oldkit' -NoNewline
+            Set-Content -LiteralPath (Join-Path $skills3 'board\.kit-installed.json') -Value '{}'
+            Set-Content -LiteralPath (Join-Path $skills3 'board\SKILL.md') -Value 'old'
+            $hooks3 = Join-Path $ib 'hooks-old.json'
+            Set-Content -LiteralPath $hooks3 -Value (@{ version = 1; hooks = @{ beforeShellExecution = @(@{ command = 'pwsh -File "x\hooks\oldkit\Guard-Write.ps1"'; failClosed = $true }) } } | ConvertTo-Json -Depth 6)
+            $oldHome = Join-Path $ib 'home\oldkit'
+            New-Item -ItemType Directory -Force -Path $oldHome | Out-Null
+            Set-Content -LiteralPath (Join-Path $oldHome 'config.json') -Value (@{ version = 2; kit = @{ packFile = (Join-Path $clone2 'packs\alpha\pack.json') }; user = @{ name = 'Old Me' } } | ConvertTo-Json -Depth 4)
+            [Environment]::SetEnvironmentVariable("${prefix}_HOME", (Join-Path (Join-Path $ib 'home') 'fresh'), 'Process')
+            Remove-Item -LiteralPath (Join-Path $clone2 'packs\beta') -Recurse -Force
+            $m1 = Invoke-Kit (Join-Path $clone2 'Install.ps1') @('-Target', $skills3, '-HooksFile', $hooks3, '-StateRoot', (Join-Path $ib 'state-old'))
+            $movedMarker = (Get-Content -Raw (Join-Path $skills3 'board\.kit')).Trim()
+            $oldEntries = @((Get-Content -Raw $hooks3 | ConvertFrom-Json).hooks.beforeShellExecution | Where-Object { "$($_.command)" -match '\\hooks\\oldkit\\' }).Count
+            $migratedName = if (Test-Path -LiteralPath (Join-Path $ib 'home\fresh\alpha\config.json')) { [string](Get-Content -Raw (Join-Path $ib 'home\fresh\alpha\config.json') | ConvertFrom-Json).user.name } else { '' }
+            $migrateOk = $m1.code -eq 0 -and $movedMarker -eq $kitName -and -not $oldEntries -and $migratedName -eq 'Old Me'
+            Add-Result 'fake' 'install over an earlier name' $(if ($migrateOk) { 'ok' } else { 'fail' }) "exit $($m1.code); board now says '$movedMarker'; $oldEntries old guard entr$(if ($oldEntries -eq 1) { 'y' } else { 'ies' }); configuration moved: '$migratedName'"
+        }
     }
     catch { Add-Result 'fake' 'sandbox' 'fail' $_.Exception.Message }
     finally {
         [Environment]::SetEnvironmentVariable($kitConfigVar, $savedConfigVar, 'Process')
+        [Environment]::SetEnvironmentVariable(($kitConfigVar -replace '_CONFIG$', '_HOME'), $savedHomeVar, 'Process')
         if ($KeepFake) { Add-Result 'fake' 'sandbox' 'ok' "Kept at $sandbox (the brief is state\brief.md)." }
         elseif (Test-Path -LiteralPath $sandbox) { Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue }
     }

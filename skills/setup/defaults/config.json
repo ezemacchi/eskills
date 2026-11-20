@@ -48,7 +48,7 @@
       ]
     },
     "lint": {
-      "allow": ["setup/defaults/*", "setup/pack/*"],
+      "allow": ["setup/defaults/*", "setup/packs/*"],
       "patterns": [
         { "name": "URL", "regex": "https?://[A-Za-z0-9-]+\\.[A-Za-z]" },
         { "name": "absolute Windows path", "regex": "\\b[A-Za-z]:[\\\\/]" },

@@ -9,7 +9,7 @@ disable-model-invocation: true
 ## Running it
 
 ```powershell
-$kit = (Get-Content -Raw (@($env:{{kit.configVar}}, "$env:LOCALAPPDATA\{{kit.name}}\config.json") | Where-Object { $_ })[0] | ConvertFrom-Json).scripts
+$kit = (pwsh -NoProfile -File "{{kit.setupScript}}" scripts) -join "`n" | ConvertFrom-Json
 pwsh -NoProfile -File $kit.brief                    # the brief, in Markdown
 pwsh -NoProfile -File $kit.brief qa -Key PROJ-123   # only: does the instance testers use have this ticket's change?
 ```

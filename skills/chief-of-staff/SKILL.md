@@ -9,7 +9,7 @@ disable-model-invocation: true
 ## Getting the plan
 
 ```powershell
-$kit = (Get-Content -Raw (@($env:{{kit.configVar}}, "$env:LOCALAPPDATA\{{kit.name}}\config.json") | Where-Object { $_ })[0] | ConvertFrom-Json).scripts
+$kit = (pwsh -NoProfile -File "{{kit.setupScript}}" scripts) -join "`n" | ConvertFrom-Json
 pwsh -NoProfile -File $kit.chief                 # the plan, in Markdown
 pwsh -NoProfile -File $kit.chief -Json           # the same, with each item's data
 ```

@@ -48,12 +48,13 @@
     Point it at a temporary folder together with -Target to try an install.
 
 .PARAMETER Pack
-    A project pack: a folder with pack.json (the project's values: which provider each capability
-    uses, addresses, rules, roles), the team's people.md and notes.md. It is copied into the setup
-    skill (setup\pack), so the installed kit carries it; its kit.name names the kit. A skill whose
-    capability the pack turns off ("enabled": false) is not installed. Updating a kit installed with
-    a pack needs the pack again. Without -Pack, the one pack in this repository's packs\ folder is
-    used (git ignores that folder, so a private pack kept there is never committed).
+    Project packs outside this clone's packs\ folder (several separated by commas). A pack is a folder
+    with pack.json (the project's values: which provider each capability uses, addresses, rules,
+    roles), the team's people.md and notes.md. Every pack in packs\ and each -Pack folder is copied
+    into the setup skill (setup\packs\<pack.name>), so the installed kit carries them; the kit uses
+    the one whose repositories include the folder it runs in. git ignores packs\, so a private pack
+    kept there is never committed. An update must include every pack already installed, or it stops
+    (with -Force it removes the missing ones). The kit keeps its own name: a pack's kit.name is ignored.
 
 .PARAMETER Role
     The person's roles in the project: one or more of the pack's roles (roles\<name>.json in the
@@ -78,7 +79,7 @@ param(
     [string] $Target,
     [string] $HooksFile,
     [string] $StateRoot,
-    [string] $Pack,
+    [string[]] $Pack,
     [string[]] $Role,
     [switch] $Force
 )
@@ -101,50 +102,81 @@ function Merge-KitObject($Base, $Over) {
 
 $source = Join-Path $PSScriptRoot 'skills'
 $defaults = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $source 'setup\defaults\config.json') | ConvertFrom-Json
+# The kit keeps its own name whatever the pack says: one name means one configuration folder and one
+# hook folder, and adding or changing a pack never moves them.
+$kitName = [string]$defaults.kit.name
 $hostPlaces = $defaults.kit.agentHosts.$AgentHost
 if (-not $Target) { $Target = Join-Path $env:USERPROFILE ([string]$hostPlaces.skills) }
 if (-not $HooksFile) { $HooksFile = Join-Path $env:USERPROFILE ([string]$hostPlaces.hooksFile) }
-$packDir = $null
-if (-not $Pack) {
-    $kept = @(Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'packs') -Directory -ErrorAction SilentlyContinue | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'pack.json') -PathType Leaf })
-    if ($kept.Count -gt 1) { Write-Host "Not installed: packs\ holds several packs ($(($kept | ForEach-Object { $_.Name }) -join ', ')). Pass -Pack <folder> to say which."; exit 1 }
-    if ($kept.Count -eq 1) { $Pack = $kept[0].FullName; Write-Host "Using the project pack in packs\$($kept[0].Name)." }
-}
-if ($Pack) {
-    $packDir = [IO.Path]::GetFullPath($Pack)
-    $packJson = Join-Path $packDir 'pack.json'
-    if (-not (Test-Path -LiteralPath $packJson -PathType Leaf)) { Write-Host "Not installed: there is no pack.json in $packDir."; exit 1 }
-    $defaults = Merge-KitObject $defaults (Get-Content -Raw -Encoding utf8 -LiteralPath $packJson | ConvertFrom-Json)
-    if ($Role) {
-        $Role = @($Role | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -Unique)
-        $roles = @(Get-ChildItem -LiteralPath (Join-Path $packDir 'roles') -Filter '*.json' -File -ErrorAction SilentlyContinue | ForEach-Object { $_.BaseName })
-        $unknown = @($Role | Where-Object { $_ -notin $roles })
-        if ($unknown.Count) {
-            Write-Host "Not installed: the pack has no role $(($unknown | ForEach-Object { "'$_'" }) -join ', '). $(if ($roles.Count) { "Its roles: $($roles -join ', ')." } else { 'It defines no roles (roles\<name>.json).' })"
-            exit 1
-        }
+# The project packs: every one in this clone's packs\ folder, and each folder -Pack names. They are installed
+# side by side (setup\packs\<pack.name>); the kit uses the one whose repositories include the folder it runs in.
+$packFolders = [ordered]@{}
+$packValues = @{}
+$packSources = @(@(Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'packs') -Directory -ErrorAction SilentlyContinue | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'pack.json') -PathType Leaf } | ForEach-Object { $_.FullName }) +
+    @($Pack | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ } | ForEach-Object { [IO.Path]::GetFullPath($_) }))
+foreach ($folder in $packSources) {
+    $packJson = Join-Path $folder 'pack.json'
+    if (-not (Test-Path -LiteralPath $packJson -PathType Leaf)) { Write-Host "Not installed: there is no pack.json in $folder."; exit 1 }
+    $values = Get-Content -Raw -Encoding utf8 -LiteralPath $packJson | ConvertFrom-Json
+    $name = if ($values.PSObject.Properties['pack']) { [string]$values.pack.name } else { '' }
+    if ($name -notmatch '^[A-Za-z0-9_-]+$') { Write-Host "Not installed: $packJson needs pack.name, a simple name (letters, digits, - and _)."; exit 1 }
+    if ($packFolders.Contains($name)) {
+        if ($packFolders[$name] -ne $folder) { Write-Host "Not installed: two packs are named '$name' ($($packFolders[$name]) and $folder)."; exit 1 }
+        continue
     }
+    if ($values.PSObject.Properties['kit'] -and $values.kit.PSObject.Properties['name'] -and [string]$values.kit.name -ne $kitName) {
+        Write-Host "The pack $name sets kit.name ('$($values.kit.name)'), which is ignored: the kit keeps its name, $kitName."
+    }
+    $packFolders[$name] = $folder
+    $packValues[$name] = $values
 }
-elseif ($Role) { Write-Host 'Not installed: -Role needs -Pack, the project pack that defines the roles.'; exit 1 }
-elseif (Test-Path -LiteralPath (Join-Path $Target 'setup\pack\pack.json') -PathType Leaf) {
-    Write-Host "Not installed: the kit in $Target was installed with a project pack (setup\pack). Run again with -Pack <the pack's folder>, so the update keeps it."
+if ($packFolders.Count) { Write-Host "Project packs: $(@($packFolders.Keys) -join ', ')." }
+
+# A pack already installed and not part of this install would be lost.
+$installedPacks = @(@(Get-ChildItem -LiteralPath (Join-Path $Target 'setup\packs') -Directory -ErrorAction SilentlyContinue | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'pack.json') -PathType Leaf } | ForEach-Object { $_.Name }) +
+    @(if (Test-Path -LiteralPath (Join-Path $Target 'setup\pack\pack.json') -PathType Leaf) { [string](Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $Target 'setup\pack\pack.json') | ConvertFrom-Json).pack.name }) |
+    Where-Object { $_ } | Sort-Object -Unique)
+$lost = @($installedPacks | Where-Object { -not $packFolders.Contains($_) })
+if ($lost.Count -and -not $Force) {
+    Write-Host "Not installed: the kit in $Target has the pack(s) $($lost -join ', '), which are neither in packs\ nor named by -Pack, so this update would remove them. Put them in packs\ (or pass -Pack <folder>), or run again with -Force to remove them."
     exit 1
 }
-$kitName = [string]$defaults.kit.name
 
-# A skill is skipped when the pack turns off a capability it needs; a capability with no provider yet
-# is still installed, because /setup chooses one.
+if ($Role) {
+    if ($packFolders.Count -ne 1) { Write-Host "Not installed: -Role goes with exactly one project pack (this install has $($packFolders.Count)). With several, /setup in each project chooses its roles."; exit 1 }
+    $onlyPack = @($packFolders.Keys)[0]
+    $Role = @($Role | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -Unique)
+    $roles = @(Get-ChildItem -LiteralPath (Join-Path $packFolders[$onlyPack] 'roles') -Filter '*.json' -File -ErrorAction SilentlyContinue | ForEach-Object { $_.BaseName })
+    $unknown = @($Role | Where-Object { $_ -notin $roles })
+    if ($unknown.Count) {
+        Write-Host "Not installed: the pack has no role $(($unknown | ForEach-Object { "'$_'" }) -join ', '). $(if ($roles.Count) { "Its roles: $($roles -join ', ')." } else { 'It defines no roles (roles\<name>.json).' })"
+        exit 1
+    }
+}
+
+# A skill is skipped only when every pack turns off a capability it needs; a capability with no provider
+# yet is still installed, because /setup chooses one.
+$layers = if ($packFolders.Count) { @(foreach ($name in $packFolders.Keys) { Merge-KitObject $defaults $packValues[$name] }) } else { @($defaults) }
 $skills = @($defaults.kit.skills | Where-Object {
         $needs = @($defaults.kit.skillCapabilities.$_ | Where-Object { $_ })
-        -not @($needs | Where-Object { $defaults.capabilities.$_.enabled -eq $false }).Count
+        @($layers | Where-Object { $layer = $_; -not @($needs | Where-Object { $layer.capabilities.$_.enabled -eq $false }).Count }).Count -gt 0
     })
+
+New-Item -ItemType Directory -Force -Path $Target | Out-Null
+
+# This kit installed under an earlier name (a pack used to rename it): folders with a .kit marker and the
+# installer's record, naming something else. They are the kit's own, replaced like any update.
+$formerNames = @(Get-ChildItem -LiteralPath $Target -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+        $marker = Join-Path $_.FullName '.kit'
+        if ((Test-Path -LiteralPath $marker -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $_.FullName '.kit-installed.json') -PathType Leaf)) { (Get-Content -Raw -LiteralPath $marker).Trim() }
+    } | Where-Object { $_ -and $_ -ne $kitName } | Sort-Object -Unique)
 
 function Test-KitFolder([string]$Dir) {
     $marker = Join-Path $Dir '.kit'
-    (Test-Path -LiteralPath $marker -PathType Leaf) -and ((Get-Content -Raw -LiteralPath $marker).Trim() -eq $kitName)
+    if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) { return $false }
+    $name = (Get-Content -Raw -LiteralPath $marker).Trim()
+    $name -eq $kitName -or $name -in $formerNames
 }
-
-New-Item -ItemType Directory -Force -Path $Target | Out-Null
 
 $conflicts = @($skills | Where-Object { (Test-Path -LiteralPath (Join-Path $Target $_)) -and -not (Test-KitFolder (Join-Path $Target $_)) })
 if ($conflicts.Count -and -not $Force) {
@@ -153,8 +185,40 @@ if ($conflicts.Count -and -not $Force) {
     exit 1
 }
 
-if (-not $StateRoot) { $StateRoot = Join-Path $env:LOCALAPPDATA $kitName }
+$kitVarPrefix = $kitName.ToUpperInvariant() -replace '[^A-Z0-9]', '_'
+$kitConfigVar = "${kitVarPrefix}_CONFIG"
+$kitRoot = [Environment]::GetEnvironmentVariable("${kitVarPrefix}_HOME", 'Process')
+if (-not $kitRoot) { $kitRoot = Join-Path $env:LOCALAPPDATA $kitName }
+$stateRootGiven = [bool]$StateRoot
+if (-not $StateRoot) { $StateRoot = $kitRoot }
 $StateRoot = [IO.Path]::GetFullPath($StateRoot)
+
+# Each project has its own folder for the person (<kit folder>\<pack>). A configuration kept where an earlier
+# version kept it (the kit's folder itself, or the folder of the kit's earlier name) is copied once to its
+# project's folder, before the old pack is replaced below; the old copy is left as it was.
+$overridden = [Environment]::GetEnvironmentVariable($kitConfigVar, 'Process') -or [Environment]::GetEnvironmentVariable($kitConfigVar, 'User')
+if (-not $overridden -and $packFolders.Count) {
+    foreach ($oldHome in @(@($kitRoot) + @($formerNames | ForEach-Object { Join-Path (Split-Path -Parent $kitRoot) $_ }))) {
+        $oldConfig = Join-Path $oldHome 'config.json'
+        if (-not (Test-Path -LiteralPath $oldConfig -PathType Leaf)) { continue }
+        $old = try { Get-Content -Raw -Encoding utf8 -LiteralPath $oldConfig | ConvertFrom-Json } catch { $null }
+        if ($null -eq $old) { continue }
+        $oldPackFile = if ($old.PSObject.Properties['kit'] -and $old.kit.PSObject.Properties['packFile']) { [string]$old.kit.packFile } else { '' }
+        $owner = if ($oldPackFile -and (Test-Path -LiteralPath $oldPackFile -PathType Leaf)) { [string](Get-Content -Raw -Encoding utf8 -LiteralPath $oldPackFile | ConvertFrom-Json).pack.name }
+        elseif ($packFolders.Count -eq 1) { @($packFolders.Keys)[0] } else { '' }
+        if (-not $owner -or -not $packFolders.Contains($owner)) { continue }
+        $newHome = Join-Path $kitRoot $owner
+        if (Test-Path -LiteralPath (Join-Path $newHome 'config.json') -PathType Leaf) { continue }
+        New-Item -ItemType Directory -Force -Path $newHome | Out-Null
+        foreach ($item in 'config.json', 'state', 'proposals', 'people.md', 'notes.md', 'brief-template.md', 'next-steps-template.md', 'board-comments-guide.md', 'chat-messages-guide.md') {
+            $from = Join-Path $oldHome $item
+            if (Test-Path -LiteralPath $from) { Copy-Item -LiteralPath $from -Destination (Join-Path $newHome $item) -Recurse -Force }
+        }
+        Write-Host "Your configuration for $owner is now in $newHome (copied from $oldHome, which is left as it was)."
+        $oldVar = ((Split-Path -Leaf $oldHome).ToUpperInvariant() -replace '[^A-Z0-9]', '_') + '_CONFIG'
+        if ($oldVar -ne $kitConfigVar -and [Environment]::GetEnvironmentVariable($oldVar, 'User')) { Write-Host "Your user variable $oldVar is no longer read." }
+    }
+}
 $manifestName = '.kit-installed.json'
 $configRel = 'defaults/config.json'
 
@@ -268,8 +332,8 @@ function Update-KitSkill([string]$Skill, [string]$From, [string]$Dest, [string]$
     $notes
 }
 
-$kitConfigVar = ($kitName.ToUpperInvariant() -replace '[^A-Z0-9]', '_') + '_CONFIG'
 $utf8 = New-Object System.Text.UTF8Encoding $false
+$setupScriptPath = Join-Path ([IO.Path]::GetFullPath($Target)) 'setup\scripts\Initialize-Config.ps1'
 
 # A copy of one skill with {{kit.name}} and {{kit.configVar}} filled in its Markdown files. The install
 # record hashes this copy, so an installed file the person did not edit matches the kit's.
@@ -282,17 +346,19 @@ function New-KitStage([string]$Skill) {
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $to) | Out-Null
         $text = if ($rel -like '*.md') { [IO.File]::ReadAllText($files[$rel]) } else { $null }
         if ($rel -eq '.kit') { [IO.File]::WriteAllText($to, $kitName, $utf8) }
-        elseif ($text -and ($text.Contains('{{kit.name}}') -or $text.Contains('{{kit.configVar}}'))) {
-            [IO.File]::WriteAllText($to, $text.Replace('{{kit.name}}', $kitName).Replace('{{kit.configVar}}', $kitConfigVar), $utf8)
+        elseif ($text -and ($text.Contains('{{kit.name}}') -or $text.Contains('{{kit.configVar}}') -or $text.Contains('{{kit.setupScript}}'))) {
+            [IO.File]::WriteAllText($to, $text.Replace('{{kit.name}}', $kitName).Replace('{{kit.configVar}}', $kitConfigVar).Replace('{{kit.setupScript}}', $setupScriptPath), $utf8)
         }
         else { Copy-Item -LiteralPath $files[$rel] -Destination $to -Force }
     }
-    if ($Skill -eq 'setup' -and $packDir) {
-        $packFiles = Get-KitFiles $packDir
-        foreach ($rel in @($packFiles.Keys | Where-Object { $_ -notlike '.git/*' -and $_ -ne '.git' })) {
-            $to = Join-Path $stage "pack\$rel"
-            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $to) | Out-Null
-            Copy-Item -LiteralPath $packFiles[$rel] -Destination $to -Force
+    if ($Skill -eq 'setup') {
+        foreach ($name in $packFolders.Keys) {
+            $packFiles = Get-KitFiles $packFolders[$name]
+            foreach ($rel in @($packFiles.Keys | Where-Object { $_ -notlike '.git/*' -and $_ -ne '.git' })) {
+                $to = Join-Path $stage "packs\$name\$rel"
+                New-Item -ItemType Directory -Force -Path (Split-Path -Parent $to) | Out-Null
+                Copy-Item -LiteralPath $packFiles[$rel] -Destination $to -Force
+            }
         }
     }
     $stage
@@ -308,8 +374,24 @@ foreach ($skill in $skills) {
         Write-Host "Moved your own '$skill' to $backup"
     }
     $report = @(Update-KitSkill $skill (New-KitStage $skill) $dest (Join-Path $StateRoot "base\$skill"))
+    # The marker is the kit's, never the person's: it always names the kit (also over an earlier name).
+    [IO.File]::WriteAllText((Join-Path $dest '.kit'), $kitName, $utf8)
+    # Folders left empty by files the kit no longer ships (an earlier layout, say).
+    Get-ChildItem -LiteralPath $dest -Directory -Recurse | Sort-Object { $_.FullName.Length } -Descending |
+        Where-Object { -not (Get-ChildItem -LiteralPath $_.FullName -Force) } | Remove-Item -Force
     Write-Host "Installed $skill"
     foreach ($line in $report) { Write-Host "  $line" }
+}
+
+# Where this install came from, for /setup's add-pack, which installs again the same way with a new pack.
+$sourceRecord = [ordered]@{
+    source = $PSScriptRoot; agentHost = $AgentHost; target = [IO.Path]::GetFullPath($Target); hooksFile = [IO.Path]::GetFullPath($HooksFile)
+    stateRoot = $(if ($stateRootGiven) { $StateRoot } else { $null })
+    packs = @($packFolders.Values | Where-Object { -not ([string]$_).StartsWith((Join-Path $PSScriptRoot 'packs'), [StringComparison]::OrdinalIgnoreCase) })
+    at = (Get-Date).ToString('o')
+}
+if (Test-Path -LiteralPath (Join-Path $Target 'setup') -PathType Container) {
+    [IO.File]::WriteAllText((Join-Path $Target 'setup\.kit-source.json'), ([pscustomobject]$sourceRecord | ConvertTo-Json -Depth 4), $utf8)
 }
 
 # A kit folder this version no longer ships (renamed, removed, or its capability turned off) would stay
@@ -326,9 +408,14 @@ $exitCode = 0
 $hookSpec = $defaults.kit.hooks
 $hostEntries = if ($hookSpec) { if ($AgentHost -eq 'claude') { @($hookSpec.claude | Where-Object { $_ }) } else { @($hookSpec.entries | Where-Object { $_ }) } } else { @() }
 
-# A Claude Code hook group is the kit's when one of its handlers runs a script in hooks\<kit.name>\.
-function Test-KitGroup($Group, [string]$Marker) {
-    @($Group.hooks | Where-Object { "$($_.command) $(@($_.args) -join ' ')".IndexOf($Marker, [StringComparison]::OrdinalIgnoreCase) -ge 0 }).Count -gt 0
+# A hook entry is the kit's when it runs a script in hooks\<kit.name>\ (or in the folder of an earlier name of
+# the kit). A Claude Code group is the kit's when one of its handlers does.
+function Test-KitCommand([string]$Text) {
+    foreach ($m in $markers) { if ($Text.IndexOf($m, [StringComparison]::OrdinalIgnoreCase) -ge 0) { return $true } }
+    $false
+}
+function Test-KitGroup($Group) {
+    @($Group.hooks | Where-Object { Test-KitCommand "$($_.command) $(@($_.args) -join ' ')" }).Count -gt 0
 }
 
 if ($hostEntries.Count) {
@@ -338,7 +425,8 @@ if ($hostEntries.Count) {
     else {
         $hooksPath = [IO.Path]::GetFullPath($HooksFile)
         $hookDir = Join-Path (Split-Path -Parent $hooksPath) "hooks\$kitName"
-        $marker = "\hooks\$kitName\"
+        # The old folders are left in place: the agent may still run them until it restarts.
+        $markers = @(@("\hooks\$kitName\") + @($formerNames | ForEach-Object { "\hooks\$_\" }))
         $current = $null
         if (Test-Path -LiteralPath $hooksPath -PathType Leaf) {
             try { $current = Get-Content -Raw -Encoding utf8 -LiteralPath $hooksPath | ConvertFrom-Json }
@@ -366,7 +454,7 @@ if ($hostEntries.Count) {
             $allEvents = @(@($current.hooks.PSObject.Properties | ForEach-Object { $_.Name }) + $kitEvents | Sort-Object -Unique)
             foreach ($eventName in $allEvents) {
                 if ($AgentHost -eq 'claude') {
-                    $kept = @(if ($current.hooks.PSObject.Properties[$eventName]) { @($current.hooks.$eventName) | Where-Object { -not (Test-KitGroup $_ $marker) } })
+                    $kept = @(if ($current.hooks.PSObject.Properties[$eventName]) { @($current.hooks.$eventName) | Where-Object { -not (Test-KitGroup $_) } })
                     $added = @($hostEntries | Where-Object { $_.event -eq $eventName } | ForEach-Object {
                             $handler = [ordered]@{
                                 type = 'command'; command = 'pwsh'
@@ -379,7 +467,7 @@ if ($hostEntries.Count) {
                 }
                 else {
                     $kept = @(if ($current.hooks.PSObject.Properties[$eventName]) {
-                            @($current.hooks.$eventName) | Where-Object { "$($_.command)".IndexOf($marker, [StringComparison]::OrdinalIgnoreCase) -lt 0 }
+                            @($current.hooks.$eventName) | Where-Object { -not (Test-KitCommand "$($_.command)") }
                         })
                     $added = @($hostEntries | Where-Object { $_.event -eq $eventName } | ForEach-Object {
                             $entry = [ordered]@{ command = "pwsh -NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $hookDir $_.script)`"" }
@@ -410,11 +498,19 @@ if ($hostEntries.Count) {
 }
 
 if (Get-Command pwsh -ErrorAction SilentlyContinue) {
-    $initArgs = @('init') + $(if ($Role) { @('-Role', ($Role -join ',')) } else { @() })
-    & pwsh -NoProfile -File (Join-Path $Target 'setup\scripts\Initialize-Config.ps1') @initArgs | Out-Null
-    if ($LASTEXITCODE -eq 0) { Write-Host $(if ($Role) { "Configuration refreshed, with the role$(if ($Role.Count -gt 1) { 's' }) $($Role -join ', ')." } else { 'Configuration refreshed.' }) }
-    else { Write-Host "The configuration was not refreshed (Initialize-Config.ps1 init answered $LASTEXITCODE); /setup step 2 shows why." }
-    Write-Host $(if ($AgentHost -eq 'claude') { 'Next: in Claude Code, start a new session and run /setup.' } else { 'Next: in Cursor, open a new chat and run /setup.' })
+    # One configuration per project pack (or one for the kit alone), each refreshed with init.
+    $packVar = "${kitVarPrefix}_PACK"
+    $savedPackVar = [Environment]::GetEnvironmentVariable($packVar, 'Process')
+    foreach ($name in @(if ($packFolders.Count) { $packFolders.Keys } else { '' })) {
+        [Environment]::SetEnvironmentVariable($packVar, $(if ($name) { $name } else { $null }), 'Process')
+        $initArgs = @('init') + $(if ($Role) { @('-Role', ($Role -join ',')) } else { @() })
+        & pwsh -NoProfile -File (Join-Path $Target 'setup\scripts\Initialize-Config.ps1') @initArgs | Out-Null
+        $what = if ($name) { "for $name" } else { 'for the kit' }
+        if ($LASTEXITCODE -eq 0) { Write-Host "Configuration refreshed $what$(if ($Role) { ", with the role$(if ($Role.Count -gt 1) { 's' }) $($Role -join ', ')" })." }
+        else { Write-Host "The configuration $what was not refreshed (Initialize-Config.ps1 init answered $LASTEXITCODE); /setup step 2 shows why." }
+    }
+    [Environment]::SetEnvironmentVariable($packVar, $savedPackVar, 'Process')
+    Write-Host $(if ($AgentHost -eq 'claude') { 'Next: in Claude Code, start a new session and run /setup.' } else { 'Next: restart Cursor, open a new chat and run /setup.' })
 }
 else {
     Write-Host 'PowerShell 7 is not installed. Install it (winget install Microsoft.PowerShell), restart the agent, and run /setup.'

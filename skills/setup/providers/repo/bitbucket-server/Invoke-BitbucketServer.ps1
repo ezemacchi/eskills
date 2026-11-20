@@ -85,7 +85,11 @@ function Get-KitName {
     $dir = $PSScriptRoot
     while ($dir) {
         $marker = Join-Path $dir '.kit'
-        if (Test-Path -LiteralPath $marker -PathType Leaf) { $script:kitName = (Get-Content -Raw -LiteralPath $marker).Trim(); return $script:kitName }
+        if (Test-Path -LiteralPath $marker -PathType Leaf) {
+            $script:kitName = (Get-Content -Raw -LiteralPath $marker).Trim()
+            $script:kitSkillsRoot = Split-Path -Parent $dir
+            return $script:kitName
+        }
         $up = Split-Path -Parent $dir
         if ($up -eq $dir) { break }
         $dir = $up
@@ -93,8 +97,18 @@ function Get-KitName {
     Stop-Kit 2 "No .kit file in a folder above $PSScriptRoot. Reinstall the kit."
 }
 
-# Windows only for now: Get-KitHome, Get-KitEnv and Set-KitEnv are what a macOS or Linux port changes.
-function Get-KitHome { Join-Path $env:LOCALAPPDATA (Get-KitName) }
+# The folder that holds the installed skills: the parent of the skill whose .kit names the kit.
+function Get-KitSkillsRoot { [void](Get-KitName); $script:kitSkillsRoot }
+
+function Get-KitVarPrefix { (Get-KitName).ToUpperInvariant() -replace '[^A-Z0-9]', '_' }
+
+# Windows only for now: Get-KitRoot, Get-KitEnv and Set-KitEnv are what a macOS or Linux port changes.
+# The kit's folder for the person: %LOCALAPPDATA%\<kit name>, or the folder in <KIT>_HOME.
+function Get-KitRoot {
+    $over = [Environment]::GetEnvironmentVariable((Get-KitVarPrefix) + '_HOME', 'Process')
+    if ($over) { return $over }
+    Join-Path $env:LOCALAPPDATA (Get-KitName)
+}
 
 # Read from the process first, then from the user's own: a program started before the variable was set does not have it.
 function Get-KitEnv([string]$Name, [switch]$Saved) {
@@ -107,12 +121,65 @@ function Get-KitEnv([string]$Name, [switch]$Saved) {
 
 function Set-KitEnv([string]$Name, [string]$Value) { [Environment]::SetEnvironmentVariable($Name, $Value, 'User') }
 
-function Get-KitConfigVar { ((Get-KitName).ToUpperInvariant() -replace '[^A-Z0-9]', '_') + '_CONFIG' }
+function Get-KitConfigVar { (Get-KitVarPrefix) + '_CONFIG' }
 
-function Get-KitConfigPath {
+# The project pack in use, among those installed in setup\packs: the one <KIT>_PACK names; else the one
+# whose repositories (repos[].name) include the git repository of the current folder; else the person's
+# default (defaultPack in settings.json, in the kit's folder); else the only one. $null without packs.
+# When several are installed and none of that applies it stops, unless -Quiet (then $null).
+function Get-KitPack([switch]$Quiet) {
+    if (-not $script:kitPackKnown) {
+        $script:kitPackKnown = $true
+        $script:kitPack = $null
+        $script:kitPackFrom = 'none'
+        $packsDir = Join-Path (Get-KitSkillsRoot) 'setup\packs'
+        $script:kitPacks = @(Get-ChildItem -LiteralPath $packsDir -Directory -ErrorAction SilentlyContinue | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'pack.json') -PathType Leaf } | ForEach-Object { $_.Name })
+        if ($script:kitPacks.Count) {
+            $forced = [Environment]::GetEnvironmentVariable((Get-KitVarPrefix) + '_PACK', 'Process')
+            $origin = ''
+            if (-not $forced) {
+                $here = try { $PWD.ProviderPath } catch { '' }
+                if ($here) { $origin = "$(& git -C $here remote get-url origin 2>$null)".Trim() }
+            }
+            $settingsFile = Join-Path (Get-KitRoot) 'settings.json'
+            $default = if (Test-Path -LiteralPath $settingsFile -PathType Leaf) { try { [string](Get-Content -Raw -Encoding utf8 -LiteralPath $settingsFile | ConvertFrom-Json).defaultPack } catch { '' } } else { '' }
+            if ($forced) {
+                if ($forced -notin $script:kitPacks) { Stop-Kit 2 "$((Get-KitVarPrefix) + '_PACK') names '$forced', which is not installed ($($script:kitPacks -join ', '))." }
+                $script:kitPack = $forced; $script:kitPackFrom = 'variable'
+            }
+            if (-not $script:kitPack -and $origin) {
+                foreach ($name in $script:kitPacks) {
+                    $packValues = try { Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $packsDir "$name\pack.json") | ConvertFrom-Json } catch { $null }
+                    $mine = @($packValues.repos | Where-Object { $_ -and $_.name -and $origin -match "[/:]$([regex]::Escape([string]$_.name))(\.git)?/?$" })
+                    if ($mine.Count) { $script:kitPack = $name; $script:kitPackFrom = 'repository'; break }
+                }
+            }
+            if (-not $script:kitPack -and $default -and $default -in $script:kitPacks) { $script:kitPack = $default; $script:kitPackFrom = 'default' }
+            if (-not $script:kitPack -and $script:kitPacks.Count -eq 1) { $script:kitPack = $script:kitPacks[0]; $script:kitPackFrom = 'only' }
+            if (-not $script:kitPack) { $script:kitPackFrom = 'unchosen' }
+        }
+    }
+    if ($script:kitPackFrom -eq 'unchosen' -and -not $Quiet) {
+        Stop-Kit 2 "This folder is not in a repository of any installed project ($($script:kitPacks -join ', ')) and no default is chosen. Work from a project's repository, or choose a default with /setup."
+    }
+    $script:kitPack
+}
+
+# The person's files for the project in use: <kit folder>\<pack>, or the kit folder without packs.
+# With -Quiet, $null while the project is not chosen.
+function Get-KitHome([switch]$Quiet) {
+    $pack = Get-KitPack -Quiet:$Quiet
+    if ($pack) { return Join-Path (Get-KitRoot) $pack }
+    if ($script:kitPackFrom -eq 'unchosen') { return $null }
+    Get-KitRoot
+}
+
+function Get-KitConfigPath([switch]$Quiet) {
     $override = [Environment]::GetEnvironmentVariable((Get-KitConfigVar), 'Process')
     if ($override) { return $override }
-    Join-Path (Get-KitHome) 'config.json'
+    $folder = Get-KitHome -Quiet:$Quiet
+    if (-not $folder) { return $null }
+    Join-Path $folder 'config.json'
 }
 
 function Read-KitJson([string]$File) {

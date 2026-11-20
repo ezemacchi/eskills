@@ -101,14 +101,19 @@ A tool outside the kit (a board, a dashboard) uses the same commands the skills 
 else. What it can rely on:
 
 - **Finding an installed kit.** Every installed skill folder holds a `.kit` file whose text is the
-  kit's name (in the agent's skills folder: `.cursor\skills\<skill>\.kit` or `.claude\skills\<skill>\.kit`).
-  The name gives the configuration variable: upper case, every character that is not a letter or a
-  digit replaced by `_`, then `_CONFIG` (`team-skills` gives `TEAM_SKILLS_CONFIG`). The person's
-  configuration is the file that variable names (in the process, else the user's saved variables),
-  else `%LOCALAPPDATA%\<name>\config.json`.
-- **The scripts.** `scripts.<name>` in that file is the full path of each script: `setup`, `brief`,
-  `chief`, `delivery`, and one per capability that is on (`board`, `repo`, `ci`, `cd`, `chat`,
-  `specs`). A capability with no entry is off: leave it out, it is not an error.
+  kit's name (in the agent's skills folder: `.cursor\skills\<skill>\.kit` or `.claude\skills\<skill>\.kit`);
+  the configuration script is `<skills folder>\setup\scripts\Initialize-Config.ps1`.
+- **The project.** A person may have several project packs installed. The kit uses the one whose
+  repositories include the folder a command runs in, else the person's default, else the only one, and
+  each project has its own configuration (`%LOCALAPPDATA%\<kit name>\<pack>\config.json`). So run the
+  kit's commands from the project's folder (a clone or a worktree), or name the project with the
+  variable `<KIT>_PACK` (the kit's name upper case, every character that is not a letter or a digit
+  replaced by `_`: `ESKILLS_PACK`). `Initialize-Config.ps1 packs` lists the projects and says which
+  one is in use there and why.
+- **The scripts.** `pwsh -NoProfile -File <the configuration script> scripts` prints the full path of
+  each script for the project in use: `setup`, `brief`, `chief`, `delivery`, and one per capability
+  that is on (`board`, `repo`, `ci`, `cd`, `chat`, `specs`). A capability with no entry is off: leave
+  it out, it is not an error. Exit 2 means the project is not chosen or not set up yet (`/setup`).
 - **The effective configuration.** `pwsh -NoProfile -File <scripts.setup> show -Effective` prints it
   (`get -Key a.b` prints one value): which capabilities are on, the person's views, roles and
   language, the environment testers use (`delivery.qaEnvironment`), and `providerInfo.<capability>`

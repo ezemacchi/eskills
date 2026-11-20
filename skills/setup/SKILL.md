@@ -27,9 +27,9 @@ When the person says they want a skill to behave or look different, find the row
 Four layers, each on top of the one before; a value in a later layer wins, and a list replaces the earlier list:
 
 - **Kit defaults**: `defaults/config.json` in this skill's folder. Values every project shares. Replaced on every kit update.
-- **The project pack**: `pack/pack.json` in this skill's folder, installed from the project's pack with `Install.ps1 -Pack`. What everyone in the project shares: which provider each capability uses and its addresses and patterns, the plan's rules. The pack also ships the team's people directory and project notes (`people.md`, `notes.md`), and may ship templates, guides and, for a service no kit provider covers, its own providers; each replaces the kit's file of the same name.
+- **The project pack**: `packs/<name>/pack.json` in this skill's folder, one per project the person works on (step 2b adds them). What everyone in the project shares: which provider each capability uses and its addresses and patterns, the plan's rules. The pack also ships the team's people directory and project notes (`people.md`, `notes.md`), and may ship templates, guides and, for a service no kit provider covers, its own providers; each replaces the kit's file of the same name. The kit uses the pack whose repositories include the folder it runs in (a clone or a worktree of the project), else the person's default, else the only one; `packs` says which one and why.
 - **The roles**: `pack/roles/<name>.json` for each name in `user.role`, when the pack has roles. What everyone in that role shares: the saved views, whether they work with pull requests, which actions of "what do I do now" they use (`chief.use`). A person may have several roles, the main one first: they get the views of all of them (the first role's when two share an id), and every other value from the first role that sets it. `Install.ps1 -Role <name>[,<name>]` or step 6 sets `user.role`.
-- **The person's own file**: `%LOCALAPPDATA%\{{kit.name}}\config.json` (or the path in the variable `{{kit.configVar}}`). Holds only what differs for that person: usually just their identity and where their clones are.
+- **The person's own file**: one per project, `%LOCALAPPDATA%\{{kit.name}}\<pack>\config.json` (or the path in the variable `{{kit.configVar}}`). Holds only what differs for that person in that project: usually just their identity and where their clones are. Everything below configures the project in use.
 
 More:
 
@@ -42,7 +42,7 @@ More:
 The configuration script is `scripts\Initialize-Config.ps1` in this skill's folder (the folder this SKILL.md is in); call it `$setup` below. Run it with `pwsh -NoProfile -File $setup <command>`; every command prints JSON. After `init`, every kit script's path is under `scripts` in the person's file:
 
 ```powershell
-$kit = (Get-Content -Raw (@($env:{{kit.configVar}}, "$env:LOCALAPPDATA\{{kit.name}}\config.json") | Where-Object { $_ })[0] | ConvertFrom-Json).scripts
+$kit = (pwsh -NoProfile -File "{{kit.setupScript}}" scripts) -join "`n" | ConvertFrom-Json
 # $kit.setup, $kit.test, $kit.secret, $kit.brief, $kit.chief,
 # $kit.delivery (whether a ticket reached each environment; needs cd), and one per capability that is on:
 # $kit.board, $kit.repo, $kit.ci, $kit.cd, $kit.chat, $kit.specs
@@ -52,6 +52,10 @@ $kit = (Get-Content -Raw (@($env:{{kit.configVar}}, "$env:LOCALAPPDATA\{{kit.nam
 |---|---|
 | `init [-Pack <folder>] [-Role <name>[,<name>]]` | Creates or refreshes the person's file: points it at these defaults and the pack, moves a version 1 file to version 2 (keeping a copy in `backup\` next to it), records `-Role` as `user.role`, records the scripts' paths and each capability's, reports the roles and the team and personal files. Safe to re-run. |
 | `roles` | The pack's roles: name, title, description, views, the values each sets, and which are the person's (`current`, and `order`: 1 for the main one). Empty for a pack without roles. |
+| `packs` | The installed project packs, the one in use here (`active`) and why (`chosenBy`: `variable`, `repository`, `default`, `only`, or `unchosen`), the default, and whether each has a configuration. |
+| `add-pack -From <zip or folder> [-AllowScripts]` | Puts a project pack in the kit's clone (`packs\<name>`, which git ignores; a previous copy goes to `packs\.backup`) and installs the kit again with it. Refuses a pack that ships programs unless `-AllowScripts`. |
+| `default-pack -Name <name>` | The project to use outside every project's repository. |
+| `scripts` | The kit's scripts for the project in use: what the skills run. |
 | `provider -Capability <c>` | The provider a capability uses, whether it is on, its folder, and its notes (read them before using a provider-specific command). |
 | `show [-Effective]` | The person's file, or the merged result. |
 | `get -Key a.b` | One merged value. |
@@ -73,6 +77,17 @@ Talk to the person in their language (`user.language`; ask on the first run). Re
 ### 2. Configuration file
 
 `init`. Check that every skill in `skills` says `installed: true`. A missing one means the kit was copied incompletely: tell the person to run the kit's `Install.ps1` again.
+
+### 2b. The project
+
+`packs` lists the project packs installed (each says which services its project uses, its roles and its team) and which one is in use here.
+
+- **None installed**: ask whether the person has their project's pack, a zip or a folder someone on their team gave them. They can drag it into the chat or say where it is. Then `add-pack -From <that path>`.
+  - Exit `1` saying the pack ships programs: list them in plain words (those files would run on their machine) and run it again with `-AllowScripts` only after an explicit yes.
+  - On success the pack is in the kit's clone and the kit was installed again with it. Tell the person to restart the agent (Cursor or Claude Code) and run `/setup` again in a new chat, and stop here: this chat still has the old skills.
+  - No pack: the kit needs a project pack to know which services to use. Say so, and stop.
+- **Several installed and none in use** (`chosenBy: unchosen`): the person is outside every project's repository. Ask which project they want when they are outside them (`default-pack -Name <name>`), or suggest opening the project's repository.
+- **Another project later**: the same `add-pack`. The kit keeps the other packs and picks one by the repository it runs in; each project has its own configuration, so run `/setup` from that project's repository.
 
 ### 3. Board credentials
 
@@ -161,7 +176,7 @@ When one of the person's roles sets `user.pullRequests` (`roles` lists it in the
 
 ## Updating the kit
 
-A new copy of the kit is installed with its `Install.ps1` (with `-Pack <the project pack's folder>` when the kit was installed with a pack; it refuses without it, so the pack is not lost), which runs `init` at the end. A skill the new version no longer ships (renamed or removed) is moved to the backup folder, and the installer says where. The person's file, people, notes, own templates and the state folder are not touched. Each installed file the person did not touch is replaced; one they edited is kept; one they deleted is not created again; `defaults/config.json` is always replaced (an edited copy is backed up, and the installer says where). When the person edited a file the kit also changed, the new version is left next to theirs as `<name>.kit-new<ext>` and the file is a pending merge. After an update, run `pwsh -NoProfile -File $kit.test`; a new required value and every pending merge show there.
+A new copy of the kit is installed with its `Install.ps1`, run from the kit's clone after `git pull`. It installs every pack in the clone's `packs\` folder (and any folder passed with `-Pack`), refuses when a pack already installed is missing (so it is not lost), and runs `init` for each project at the end. A skill the new version no longer ships (renamed or removed) is moved to the backup folder, and the installer says where. The person's file, people, notes, own templates and the state folder are not touched. Each installed file the person did not touch is replaced; one they edited is kept; one they deleted is not created again; `defaults/config.json` is always replaced (an edited copy is backed up, and the installer says where). When the person edited a file the kit also changed, the new version is left next to theirs as `<name>.kit-new<ext>` and the file is a pending merge. After an update, run `pwsh -NoProfile -File $kit.test`; a new required value and every pending merge show there.
 
 ### 10. Update
 

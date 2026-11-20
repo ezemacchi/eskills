@@ -27,7 +27,7 @@
     Commands (all print JSON):
       init [-Pack <folder>] [-Role <name>[,<name>...]]
                                creates or refreshes the user's file: points it at these defaults and
-                               the pack (-Pack, else the pack installed in setup\pack, else the one
+                               the pack (-Pack, else the installed pack in use, else the one
                                already recorded), moves a version 1 file to version 2 (a copy is
                                kept in backup\ next to it), records -Role as user.role (the pack's
                                roles, in order), records the kit's scripts and the script of each
@@ -35,6 +35,21 @@
                                next to the user's own
       roles                    the pack's roles: name, title, description, views, the values each
                                sets, and which are the person's (current, and their order)
+      scripts                  the kit's scripts for the project in use (the person's file's
+                               "scripts"): what the skills run
+      packs                    the installed project packs, which one is in use and why (chosenBy:
+                               variable, repository, default, only, or unchosen), the default, and
+                               whether the person has a configuration for each
+      default-pack -Name <n>   the pack to use outside every project's repository
+      add-pack -From <zip or folder> [-AllowScripts]
+                               puts a project pack in the kit's clone (packs\<pack.name>; a previous
+                               copy goes to packs\.backup) and installs the kit again with it. Refuses
+                               a pack that ships programs unless -AllowScripts, which needs the
+                               person's yes after they saw the list
+
+    The project in use is the pack whose repositories include the current folder's git repository
+    (else the default, else the only pack); each project has its own configuration,
+    %LOCALAPPDATA%\<kit>\<pack>\config.json.
       provider -Capability <c> the provider a capability uses: its manifest, folder and notes
                                (the provider's own reference, when it has one)
       show [-Effective]        the user's file, or the merged result
@@ -82,9 +97,11 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory, Position = 0)]
-    [ValidateSet('init', 'show', 'get', 'set', 'unset', 'preset', 'roles', 'tools', 'repos', 'env', 'set-env', 'changes', 'merged', 'guides', 'propose', 'provider')]
+    [ValidateSet('init', 'show', 'get', 'set', 'unset', 'preset', 'roles', 'tools', 'repos', 'env', 'set-env', 'changes', 'merged', 'guides', 'propose', 'provider', 'scripts', 'packs', 'default-pack', 'add-pack')]
     [string] $Command,
     [string] $Pack,
+    [string] $From,
+    [switch] $AllowScripts,
     [string[]] $Role,
     [string] $Capability,
     [string] $Skill,
@@ -130,7 +147,11 @@ function Get-KitName {
     $dir = $PSScriptRoot
     while ($dir) {
         $marker = Join-Path $dir '.kit'
-        if (Test-Path -LiteralPath $marker -PathType Leaf) { $script:kitName = (Get-Content -Raw -LiteralPath $marker).Trim(); return $script:kitName }
+        if (Test-Path -LiteralPath $marker -PathType Leaf) {
+            $script:kitName = (Get-Content -Raw -LiteralPath $marker).Trim()
+            $script:kitSkillsRoot = Split-Path -Parent $dir
+            return $script:kitName
+        }
         $up = Split-Path -Parent $dir
         if ($up -eq $dir) { break }
         $dir = $up
@@ -138,8 +159,18 @@ function Get-KitName {
     Stop-Kit 2 "No .kit file in a folder above $PSScriptRoot. Reinstall the kit."
 }
 
-# Windows only for now: Get-KitHome, Get-KitEnv and Set-KitEnv are what a macOS or Linux port changes.
-function Get-KitHome { Join-Path $env:LOCALAPPDATA (Get-KitName) }
+# The folder that holds the installed skills: the parent of the skill whose .kit names the kit.
+function Get-KitSkillsRoot { [void](Get-KitName); $script:kitSkillsRoot }
+
+function Get-KitVarPrefix { (Get-KitName).ToUpperInvariant() -replace '[^A-Z0-9]', '_' }
+
+# Windows only for now: Get-KitRoot, Get-KitEnv and Set-KitEnv are what a macOS or Linux port changes.
+# The kit's folder for the person: %LOCALAPPDATA%\<kit name>, or the folder in <KIT>_HOME.
+function Get-KitRoot {
+    $over = [Environment]::GetEnvironmentVariable((Get-KitVarPrefix) + '_HOME', 'Process')
+    if ($over) { return $over }
+    Join-Path $env:LOCALAPPDATA (Get-KitName)
+}
 
 # Read from the process first, then from the user's own: a program started before the variable was set does not have it.
 function Get-KitEnv([string]$Name, [switch]$Saved) {
@@ -152,12 +183,65 @@ function Get-KitEnv([string]$Name, [switch]$Saved) {
 
 function Set-KitEnv([string]$Name, [string]$Value) { [Environment]::SetEnvironmentVariable($Name, $Value, 'User') }
 
-function Get-KitConfigVar { ((Get-KitName).ToUpperInvariant() -replace '[^A-Z0-9]', '_') + '_CONFIG' }
+function Get-KitConfigVar { (Get-KitVarPrefix) + '_CONFIG' }
 
-function Get-KitConfigPath {
+# The project pack in use, among those installed in setup\packs: the one <KIT>_PACK names; else the one
+# whose repositories (repos[].name) include the git repository of the current folder; else the person's
+# default (defaultPack in settings.json, in the kit's folder); else the only one. $null without packs.
+# When several are installed and none of that applies it stops, unless -Quiet (then $null).
+function Get-KitPack([switch]$Quiet) {
+    if (-not $script:kitPackKnown) {
+        $script:kitPackKnown = $true
+        $script:kitPack = $null
+        $script:kitPackFrom = 'none'
+        $packsDir = Join-Path (Get-KitSkillsRoot) 'setup\packs'
+        $script:kitPacks = @(Get-ChildItem -LiteralPath $packsDir -Directory -ErrorAction SilentlyContinue | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'pack.json') -PathType Leaf } | ForEach-Object { $_.Name })
+        if ($script:kitPacks.Count) {
+            $forced = [Environment]::GetEnvironmentVariable((Get-KitVarPrefix) + '_PACK', 'Process')
+            $origin = ''
+            if (-not $forced) {
+                $here = try { $PWD.ProviderPath } catch { '' }
+                if ($here) { $origin = "$(& git -C $here remote get-url origin 2>$null)".Trim() }
+            }
+            $settingsFile = Join-Path (Get-KitRoot) 'settings.json'
+            $default = if (Test-Path -LiteralPath $settingsFile -PathType Leaf) { try { [string](Get-Content -Raw -Encoding utf8 -LiteralPath $settingsFile | ConvertFrom-Json).defaultPack } catch { '' } } else { '' }
+            if ($forced) {
+                if ($forced -notin $script:kitPacks) { Stop-Kit 2 "$((Get-KitVarPrefix) + '_PACK') names '$forced', which is not installed ($($script:kitPacks -join ', '))." }
+                $script:kitPack = $forced; $script:kitPackFrom = 'variable'
+            }
+            if (-not $script:kitPack -and $origin) {
+                foreach ($name in $script:kitPacks) {
+                    $packValues = try { Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $packsDir "$name\pack.json") | ConvertFrom-Json } catch { $null }
+                    $mine = @($packValues.repos | Where-Object { $_ -and $_.name -and $origin -match "[/:]$([regex]::Escape([string]$_.name))(\.git)?/?$" })
+                    if ($mine.Count) { $script:kitPack = $name; $script:kitPackFrom = 'repository'; break }
+                }
+            }
+            if (-not $script:kitPack -and $default -and $default -in $script:kitPacks) { $script:kitPack = $default; $script:kitPackFrom = 'default' }
+            if (-not $script:kitPack -and $script:kitPacks.Count -eq 1) { $script:kitPack = $script:kitPacks[0]; $script:kitPackFrom = 'only' }
+            if (-not $script:kitPack) { $script:kitPackFrom = 'unchosen' }
+        }
+    }
+    if ($script:kitPackFrom -eq 'unchosen' -and -not $Quiet) {
+        Stop-Kit 2 "This folder is not in a repository of any installed project ($($script:kitPacks -join ', ')) and no default is chosen. Work from a project's repository, or choose a default with /setup."
+    }
+    $script:kitPack
+}
+
+# The person's files for the project in use: <kit folder>\<pack>, or the kit folder without packs.
+# With -Quiet, $null while the project is not chosen.
+function Get-KitHome([switch]$Quiet) {
+    $pack = Get-KitPack -Quiet:$Quiet
+    if ($pack) { return Join-Path (Get-KitRoot) $pack }
+    if ($script:kitPackFrom -eq 'unchosen') { return $null }
+    Get-KitRoot
+}
+
+function Get-KitConfigPath([switch]$Quiet) {
     $override = [Environment]::GetEnvironmentVariable((Get-KitConfigVar), 'Process')
     if ($override) { return $override }
-    Join-Path (Get-KitHome) 'config.json'
+    $folder = Get-KitHome -Quiet:$Quiet
+    if (-not $folder) { return $null }
+    Join-Path $folder 'config.json'
 }
 
 function Read-KitJson([string]$File) {
@@ -239,7 +323,8 @@ function Test-KitCapability($Config, [string]$Name) {
 $SetupRoot = Split-Path -Parent $PSScriptRoot
 $SkillsRoot = Split-Path -Parent $SetupRoot
 $DefaultsFile = Join-Path $SetupRoot 'defaults\config.json'
-$ConfigPath = Get-KitConfigPath
+# Commands that do not need a chosen project still work from a folder outside every project's repository.
+$ConfigPath = Get-KitConfigPath -Quiet:($Command -in 'packs', 'default-pack', 'add-pack', 'tools', 'changes', 'merged')
 
 function Out-Json($Object) { ConvertTo-Json -InputObject $Object -Depth 20 }
 
@@ -685,15 +770,16 @@ switch ($Command) {
         $user = Read-UserConfig
         $created = $null -eq $user
         if ($created) { $user = [pscustomobject]@{ version = $defaults.version } }
-        $installedPack = Join-Path $SetupRoot 'pack\pack.json'
+        $activePack = Get-KitPack
+        $installedPack = if ($activePack) { Join-Path $SetupRoot "packs\$activePack\pack.json" } else { '' }
         $recordedPack = if ($user.PSObject.Properties['kit'] -and $user.kit -and $user.kit.PSObject.Properties['packFile']) { [string]$user.kit.packFile } else { '' }
         $packFile = if ($Pack) {
             $candidate = Join-Path ([IO.Path]::GetFullPath($Pack)) 'pack.json'
             if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { Stop-Kit 1 "No pack.json in $Pack." }
             $candidate
         }
-        elseif (Test-Path -LiteralPath $installedPack -PathType Leaf) { $installedPack }
-        elseif ($recordedPack -and (Test-Path -LiteralPath $recordedPack -PathType Leaf)) { $recordedPack }
+        elseif ($installedPack -and (Test-Path -LiteralPath $installedPack -PathType Leaf)) { $installedPack }
+        elseif (-not $activePack -and $recordedPack -and (Test-Path -LiteralPath $recordedPack -PathType Leaf)) { $recordedPack }
         else { $null }
 
         $migratedFrom = $null
@@ -863,6 +949,114 @@ switch ($Command) {
                 $_ | Add-Member -NotePropertyName current -NotePropertyValue ($_.name -in $mine) -PassThru |
                     Add-Member -NotePropertyName order -NotePropertyValue ([array]::IndexOf([string[]]$mine, [string]$_.name) + 1) -PassThru
             })
+    }
+
+    'scripts' {
+        if (-not $ConfigPath -or -not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) { Stop-Kit 2 "This project has no configuration yet ($ConfigPath). Run /setup." }
+        $user = Read-UserConfig
+        if (-not $user.PSObject.Properties['scripts']) { Stop-Kit 2 "$ConfigPath records no scripts. Run /setup (init)." }
+        Out-Json $user.scripts
+    }
+
+    'packs' {
+        $active = Get-KitPack -Quiet
+        $settingsFile = Join-Path (Get-KitRoot) 'settings.json'
+        $default = if (Test-Path -LiteralPath $settingsFile -PathType Leaf) { [string](Read-KitJson $settingsFile).defaultPack } else { '' }
+        Out-Json ([pscustomobject]@{
+                active = $active; chosenBy = $script:kitPackFrom; default = $(if ($default) { $default } else { $null })
+                packs = @(foreach ($p in @($script:kitPacks)) {
+                        $values = Read-KitJson (Join-Path $SetupRoot "packs\$p\pack.json")
+                        $personal = Join-Path (Get-KitRoot) "$p\config.json"
+                        [pscustomobject]@{
+                            name = $p; description = $(if ($values.PSObject.Properties['pack']) { [string]$values.pack.description } else { '' })
+                            repos = @(@($values.repos) | Where-Object { $_ -and $_.name } | ForEach-Object { [string]$_.name })
+                            config = $personal; configured = (Test-Path -LiteralPath $personal -PathType Leaf)
+                        }
+                    })
+            })
+    }
+
+    'default-pack' {
+        if (-not $Name) { Stop-Kit 1 'default-pack needs -Name: one of the installed packs (packs lists them).' }
+        [void](Get-KitPack -Quiet)
+        if ($Name -notin @($script:kitPacks)) { Stop-Kit 1 "No installed pack '$Name'. Installed: $(@($script:kitPacks) -join ', ')." }
+        $kitRoot = Get-KitRoot
+        New-Item -ItemType Directory -Force -Path $kitRoot | Out-Null
+        $settingsFile = Join-Path $kitRoot 'settings.json'
+        $settings = if (Test-Path -LiteralPath $settingsFile -PathType Leaf) { Read-KitJson $settingsFile } else { [pscustomobject]@{} }
+        $settings | Add-Member -NotePropertyName defaultPack -NotePropertyValue $Name -Force
+        Set-Content -LiteralPath $settingsFile -Value (Out-Json $settings) -Encoding utf8
+        Out-Json ([pscustomobject]@{ defaultPack = $Name })
+    }
+
+    'add-pack' {
+        if (-not $From) { Stop-Kit 1 'add-pack needs -From: the pack, as a zip file or a folder.' }
+        $sourceFile = Join-Path $SetupRoot '.kit-source.json'
+        if (-not (Test-Path -LiteralPath $sourceFile -PathType Leaf)) { Stop-Kit 2 'This kit does not know the folder it was installed from. Install it again from its clone with Install.ps1, then add the pack.' }
+        $install = Read-KitJson $sourceFile
+        $installer = Join-Path ([string]$install.source) 'Install.ps1'
+        if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { Stop-Kit 2 "The kit's clone is no longer at $($install.source) (no Install.ps1 there). Clone it again and install from there." }
+        $fromPath = [IO.Path]::GetFullPath($From)
+        $script:packWork = $null
+        function Stop-AddPack([int]$Code, [string]$Message) {
+            if ($script:packWork -and (Test-Path -LiteralPath $script:packWork)) { Remove-Item -LiteralPath $script:packWork -Recurse -Force -ErrorAction SilentlyContinue }
+            Stop-Kit $Code $Message
+        }
+        if (Test-Path -LiteralPath $fromPath -PathType Leaf) {
+            if ([IO.Path]::GetExtension($fromPath) -ne '.zip') { Stop-Kit 1 "$fromPath is not a zip file or a folder." }
+            $script:packWork = Join-Path ([IO.Path]::GetTempPath()) "kit-pack-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
+            New-Item -ItemType Directory -Force -Path $script:packWork | Out-Null
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            $zip = [IO.Compression.ZipFile]::OpenRead($fromPath)
+            $escaping = @($zip.Entries | Where-Object { -not ([IO.Path]::GetFullPath((Join-Path $script:packWork $_.FullName))).StartsWith($script:packWork + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { $_.FullName })
+            $zip.Dispose()
+            if ($escaping.Count) { Stop-AddPack 1 "The zip holds paths outside its own folder ($($escaping -join ', ')); it was not used." }
+            Expand-Archive -LiteralPath $fromPath -DestinationPath $script:packWork -Force
+            $root = $script:packWork
+        }
+        elseif (Test-Path -LiteralPath $fromPath -PathType Container) { $root = $fromPath }
+        else { Stop-Kit 1 "No such file or folder: $fromPath" }
+
+        # pack.json at the top of the pack, or one folder down (a zip of the pack's folder).
+        $packRoot = if (Test-Path -LiteralPath (Join-Path $root 'pack.json') -PathType Leaf) { $root }
+        else { @(Get-ChildItem -LiteralPath $root -Directory | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'pack.json') -PathType Leaf }) | Select-Object -First 1 | ForEach-Object { $_.FullName } }
+        if (-not $packRoot) { Stop-AddPack 1 'No pack.json at the top of the pack or one folder down.' }
+        $values = try { Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $packRoot 'pack.json') | ConvertFrom-Json } catch { $null }
+        $packName = if ($values -and $values.PSObject.Properties['pack']) { [string]$values.pack.name } else { '' }
+        if ($packName -notmatch '^[A-Za-z0-9_-]+$') { Stop-AddPack 1 "pack.json is not valid, or its pack.name ('$packName') is not a simple name (letters, digits, - and _)." }
+        # A pack is meant to hold values. Programs in it would run on this machine: only with the person's yes.
+        $programs = @(Get-ChildItem -LiteralPath $packRoot -Recurse -File | Where-Object { $_.FullName -notmatch '[\\/]\.git[\\/]' -and $_.Extension -in '.ps1', '.psm1', '.psd1', '.cmd', '.bat', '.exe', '.dll', '.js', '.vbs', '.sh', '.py' } |
+                ForEach-Object { [IO.Path]::GetRelativePath($packRoot, $_.FullName) })
+        if ($programs.Count -and -not $AllowScripts) { Stop-AddPack 1 "The pack ships programs that would run on this machine: $($programs -join ', '). Show them to the person; only with their yes, run again with -AllowScripts." }
+
+        $packsDir = Join-Path ([string]$install.source) 'packs'
+        $dest = Join-Path $packsDir $packName
+        $previous = $null
+        if ([IO.Path]::GetFullPath($packRoot).TrimEnd('\') -ne [IO.Path]::GetFullPath($dest).TrimEnd('\')) {
+            if (Test-Path -LiteralPath $dest) {
+                $previous = Join-Path $packsDir ".backup\$packName-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+                New-Item -ItemType Directory -Force -Path (Split-Path -Parent $previous) | Out-Null
+                Move-Item -LiteralPath $dest -Destination $previous
+            }
+            foreach ($file in Get-ChildItem -LiteralPath $packRoot -Recurse -File | Where-Object { $_.FullName -notmatch '[\\/]\.git([\\/]|$)' }) {
+                $to = Join-Path $dest ([IO.Path]::GetRelativePath($packRoot, $file.FullName))
+                New-Item -ItemType Directory -Force -Path (Split-Path -Parent $to) | Out-Null
+                Copy-Item -LiteralPath $file.FullName -Destination $to
+            }
+        }
+        if ($script:packWork) { Remove-Item -LiteralPath $script:packWork -Recurse -Force -ErrorAction SilentlyContinue }
+
+        # The same install as before (agent, folders, packs kept outside packs\), now with this pack too.
+        $installArgs = @('-NoProfile', '-File', $installer)
+        foreach ($k in 'AgentHost', 'Target', 'HooksFile', 'StateRoot') {
+            $v = [string]$install.($k.Substring(0, 1).ToLowerInvariant() + $k.Substring(1))
+            if ($v) { $installArgs += @("-$k", $v) }
+        }
+        $outside = @(@($install.packs) | Where-Object { $_ -and -not ([string]$_).StartsWith($packsDir, [StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath (Join-Path ([string]$_) 'pack.json') -PathType Leaf) })
+        if ($outside.Count) { $installArgs += @('-Pack', ($outside -join ',')) }
+        $installed = @(& pwsh @installArgs 2>&1 | ForEach-Object { "$_" })
+        if ($LASTEXITCODE -ne 0) { Stop-Kit 1 "The pack is in $dest, but the install did not finish: $($installed -join ' | ')" }
+        Out-Json ([pscustomobject]@{ pack = $packName; folder = $dest; previous = $previous; installer = $installed; restart = $true })
     }
 
     'tools' {
