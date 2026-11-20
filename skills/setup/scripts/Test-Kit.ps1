@@ -265,8 +265,12 @@ else {
             $templateParts = @(foreach ($t in [string]$gf.folderTemplate, [string]$gf.fileTemplate) { [regex]::Matches($t, '\{(\w+)\}') | ForEach-Object { $_.Groups[1].Value } }) | Sort-Object -Unique
             $unknownParts = @($templateParts | Where-Object { $_ -notin $codeParts })
             $badKinds = @(@($gf.kinds) | Where-Object { -not $_.kind -or -not $_.match -or -not (Test-Pattern "git-files kind $($_.kind)" ([string]$_.match)) -or ($_.exclude -and -not (Test-Pattern "git-files kind $($_.kind)" ([string]$_.exclude))) })
+            $fileRegex = if ($gf.fileCodePattern) { Test-Pattern 'git-files fileCodePattern' ([string]$gf.fileCodePattern) } else { $codeRegex }
+            $fileParts = if ($fileRegex) { @(@($fileRegex.GetGroupNames() | Where-Object { $_ -notmatch '^\d+$' }) + 'root') } else { $codeParts }
+            $unknownFileParts = @($templateParts | Where-Object { $_ -notin $fileParts })
             if (-not $gf.fileTemplate) { Add-Result 'kit' 'git-files' 'fail' 'fileTemplate is empty: every file would match.' }
             elseif ($unknownParts.Count) { Add-Result 'kit' 'git-files' 'fail' "The templates use {$($unknownParts -join '}, {')}, which codePattern has no named group for. Its parts: $($codeParts -join ', ')." }
+            elseif ($unknownFileParts.Count) { Add-Result 'kit' 'git-files' 'fail' "The templates use {$($unknownFileParts -join '}, {')}, which fileCodePattern has no named group for. Its parts: $($fileParts -join ', ')." }
             elseif ($badKinds.Count) { Add-Result 'kit' 'git-files' 'fail' 'Every entry of kinds needs kind and match, both valid.' }
             else { Add-Result 'kit' 'git-files' 'ok' "code parts: $($codeParts -join ', ')" }
         }
@@ -554,8 +558,21 @@ if (-not $Static -and -not $Fake -and $null -ne $defaults) {
             Add-Result 'scripts' 'board notes' $(if ($n.code -eq 0) { 'ok' } else { 'fail' }) $n.err
         }
         if ($capOn.specs -and $scriptPaths.specs -and (Get-Prop $cfg 'paths.specsRepo')) {
-            $a = Invoke-Kit $scriptPaths.specs @('-Check')
-            Add-Result 'scripts' 'specifications' $(if ($a.code -eq 0) { 'ok' } else { 'fail' }) $(if ($a.code -eq 0) { $a.out } else { $a.err })
+            $a = Invoke-Kit $scriptPaths.specs @('-Check', '-Json')
+            $chk = if ($a.code -eq 0) { ConvertFrom-KitJson $a.out }
+            if ($null -eq $chk) { Add-Result 'scripts' 'specifications' 'fail' $(if ($a.err) { $a.err } else { 'Unexpected answer from -Check.' }) }
+            else {
+                Add-Result 'scripts' 'specifications' 'ok' "$($chk.clone) (origin $($chk.origin))"
+                $cov = $chk.coverage
+                if ($cov -and ($cov.unrecognized -or $cov.misplaced)) {
+                    $gaps = @(
+                        if ($cov.unrecognized) { "$($cov.unrecognized) story files have a name the code pattern does not recognize (e.g. $(@($cov.examples.unrecognized | ForEach-Object { Split-Path $_ -Leaf }) -join ', '))" }
+                        if ($cov.misplaced) { "$($cov.misplaced) files with a story code are where the folder or file template would not look (e.g. $(@($cov.examples.misplaced | ForEach-Object { Split-Path $_ -Leaf }) -join ', '))" }
+                    )
+                    Add-Result 'scripts' 'specs coverage' 'warn' "$($gaps -join '; '). The pack's provider values no longer fit the repository: lookups for those stories fall back to wider searches and say so. Fix the values in the pack."
+                }
+                elseif ($cov) { Add-Result 'scripts' 'specs coverage' 'ok' "$($cov.recognized) files with a story code, all where the templates look" }
+            }
         }
 
         foreach ($t in @($defaults.kit.templates.PSObject.Properties)) {
@@ -724,6 +741,10 @@ if ($Fake -and $null -ne $defaults) {
         foreach ($specFile in 'A1_ST_007_login.md', 'A1_ST_007_login.ac.md', 'A1_ST_007_login.feature', 'A1_ST_007_notes.txt', 'A1_ST_070_other.md') {
             Set-Content -LiteralPath (Join-Path $specsWork "docs\A1\$specFile") -Value 'spec'
         }
+        # Two drifts the configuration does not cover: a story kept in another area's folder, and a story whose code it cannot read.
+        New-Item -ItemType Directory -Force -Path (Join-Path $specsWork 'docs\B2') | Out-Null
+        foreach ($specFile in 'A1_ST_009_moved.md', 'A1_ST_009_moved.ac.md') { Set-Content -LiteralPath (Join-Path $specsWork "docs\B2\$specFile") -Value 'spec' }
+        Set-Content -LiteralPath (Join-Path $specsWork 'docs\A1\A1_XX_010_new.ac.md') -Value 'spec'
         Invoke-SandboxGit $specsWork @('add', '-A')
         Invoke-SandboxGit $specsWork @('commit', '-q', '-m', 'Specs')
         Invoke-SandboxGit $specsWork @('remote', 'add', 'origin', $specsOrigin)
@@ -742,6 +763,7 @@ if ($Fake -and $null -ne $defaults) {
                 fake        = @{ qualityName = 'Quality' }
                 'git-files' = [ordered]@{
                     branch = 'main'; root = 'docs'; codePattern = '(?<area>[A-Za-z]\d+)-(?<type>story|task)-(?<num>\d+)'; codeHelp = 'an <area>-story-<n> code'
+                    fileCodePattern = '^(?<area>[A-Z]\d+)_(?<type>ST|TK)_(?<num>\d+)_'
                     upper = @('area'); pad = @{ num = 3 }; aliases = @{ type = @{ story = 'ST'; task = 'TK' } }
                     folderTemplate = '{root}/{area}/'; fileTemplate = '{area}_{type}_{num}_'
                 }
@@ -832,7 +854,15 @@ if ($Fake -and $null -ne $defaults) {
         $wrongFile = @($spec.files | Where-Object { $_.path -notmatch 'A1_ST_007_' }).Count
         Add-Result 'fake' 'specs files' $(if ($kinds -eq 'scope acceptance scenarios other' -and -not $wrongFile) { 'ok' } else { 'fail' }) "a1-story-7: $(if ($spec) { $kinds } else { "exit $($s.code): $($s.err)" }); expected scope acceptance scenarios other, only A1_ST_007_ files"
         $sn = Invoke-Kit $kitScripts.specs @('no code here', '-Json')
-        Add-Result 'fake' 'specs no code' $(if ($sn.code -eq 1 -and $sn.err -match 'an <area>-story-<n> code') { 'ok' } else { 'fail' }) "exit $($sn.code): $("$($sn.err)".Trim())"
+        Add-Result 'fake' 'specs no code' $(if ($sn.code -eq 1 -and $sn.err -match 'an <area>-story-<n> code' -and $sn.err -match 'What to try') { 'ok' } else { 'fail' }) "exit $($sn.code): $("$($sn.err)".Trim())"
+        $sm = ConvertFrom-KitJson (Invoke-Kit $kitScripts.specs @('a1-story-9', '-Json')).out
+        Add-Result 'fake' 'specs moved story' $(if ($sm.fallback -eq 'whole-root' -and @($sm.files).Count -eq 2 -and $sm.note -match 'folderTemplate') { 'ok' } else { 'fail' }) "a1-story-9, kept under B2: fallback $($sm.fallback), $(@($sm.files).Count) file(s); expected whole-root, 2, a note naming folderTemplate"
+        $su = ConvertFrom-KitJson (Invoke-Kit $kitScripts.specs @('A1_XX_010', '-Json')).out
+        Add-Result 'fake' 'specs unreadable code' $(if ($su.fallback -eq 'name-search' -and @($su.files).Count -eq 1 -and $su.note -match 'codePattern') { 'ok' } else { 'fail' }) "A1_XX_010: fallback $($su.fallback), $(@($su.files).Count) file(s); expected name-search, 1, a note naming codePattern"
+        $sx = Invoke-Kit $kitScripts.specs @('a1-story-99', '-Json')
+        Add-Result 'fake' 'specs missing story' $(if ($sx.code -eq 1 -and $sx.err -match 'Also searched' -and $sx.err -match 'What to try') { 'ok' } else { 'fail' }) "a1-story-99: exit $($sx.code), the error says what was searched and what to try"
+        $sc = ConvertFrom-KitJson (Invoke-Kit $kitScripts.specs @('-Check', '-Json')).out
+        Add-Result 'fake' 'specs coverage' $(if ($sc.coverage.unrecognized -eq 1 -and $sc.coverage.misplaced -eq 2) { 'ok' } else { 'fail' }) "unrecognized $($sc.coverage.unrecognized), misplaced $($sc.coverage.misplaced); expected 1 (A1_XX_010) and 2 (the files under B2)"
 
         $guardScript = Join-Path $SkillsRoot "$($defaults.kit.hooks.source)\$(@($defaults.kit.hooks.entries)[0].script)"
         foreach ($agent in 'cursor', 'claude') {

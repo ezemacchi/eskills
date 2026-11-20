@@ -190,6 +190,7 @@
       "branch": "main",
       "root": "",
       "codePattern": "",
+      "fileCodePattern": "",
       "codeHelp": "a story code",
       "upper": [],
       "pad": {},
@@ -198,10 +199,10 @@
       "fileTemplate": "",
       "kinds": [
         { "kind": "scope", "match": "\\.md$", "exclude": "\\.(ac|nfr|ears)\\.md$" },
-        { "kind": "acceptance", "match": "\\.ac\\.md$" },
-        { "kind": "non-functional", "match": "\\.nfr\\.md$" },
-        { "kind": "requirements", "match": "\\.ears\\.md$" },
-        { "kind": "scenarios", "match": "\\.feature$" },
+        { "kind": "acceptance", "match": "\\.ac\\.md$", "story": true },
+        { "kind": "non-functional", "match": "\\.nfr\\.md$", "story": true },
+        { "kind": "requirements", "match": "\\.ears\\.md$", "story": true },
+        { "kind": "scenarios", "match": "\\.feature$", "story": true },
         { "kind": "prototypes", "match": "\\.html$" }
       ]
     }

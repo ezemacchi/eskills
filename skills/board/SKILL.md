@@ -59,7 +59,8 @@ pwsh -NoProfile -File $kit.specs <the story's code, a text that holds it (its su
 - One line per file with its kind: `scope`, `acceptance`, `non-functional`, `requirements`, `scenarios`, `prototypes`.
 - Paths printed as `origin/<branch>:<path>` mean the clone has local changes or is on another branch; read them with `git -C <clone> show origin/<branch>:<path>`. Never pull, stash or reset that clone yourself.
 - "Could not reach" means the person is probably off the VPN; say the local copy may be out of date.
-- Exit `1` "No spec files": the story is newer than the clone or the code is wrong. Re-check the code in the Jira description before saying the spec does not exist. Exit `2`: no specification clone; `/setup` step 5 sets one up.
+- `fallback` in the `-Json` answer (a note at the end of the text says the same): the files were found by a wider search, because the pack's specification values did not lead to them. `whole-root`: they are outside the folder the values point to. `name-search`: they were matched by name, so check each file's name against the story before using it. Use them, and tell the person in one line that the project's specification settings no longer fit the repository and which value the note names; offer to propose the fix to the pack (setup skill, "Proposing a change to the kit").
+- Exit `1`: nothing was found, even with the wider searches. Tell the person in plain words what was searched and the options the message lists, after re-checking the code in the ticket's description. Never say the story has no specification on that basis alone. Exit `2`: no specification clone; `/setup` step 5 sets one up.
 
 For "this ticket", take the key from the current git branch name (`git branch --show-current`) when the folder is a clone.
 

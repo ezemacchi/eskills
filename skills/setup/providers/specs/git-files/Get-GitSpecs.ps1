@@ -13,15 +13,28 @@
       root            the folder that holds the specs
       codePattern     a regular expression that finds the story's code; its named groups are the
                       parts of the code, used in the templates below
+      fileCodePattern the same for the code as it appears in file names, with the same groups,
+                      when it is written differently there (optional; codePattern by default)
       codeHelp        how the code looks, for the message when none is found
       upper, pad,     how each part is written before it fills a template: upper-cased, padded with
       aliases         zeros to a width, or replaced (an alias is matched ignoring case)
       folderTemplate  the folder to list, from {root} and the parts
       fileTemplate    how the story's file names start, from the parts
       kinds           in order, the kind of each file, from a regular expression on its path
-                      (match, and optionally exclude); a file no kind matches is 'other'
+                      (match, and optionally exclude); a file no kind matches is 'other'. A kind
+                      marked "story": true is one only stories have (acceptance criteria, say)
     Pulls only when the clone is on that branch with no local changes. Otherwise fetches and lists
     files as origin/<branch>:<path>, readable with git -C <clone> show origin/<branch>:<path>.
+
+    When the templates find nothing, it searches on before giving up, and says so: first names
+    starting with the story's prefix anywhere under root (fallback "whole-root"), then names that
+    contain what was passed, or a shorter tail of it (fallback "name-search"; this also covers a code
+    codePattern does not recognize). Files found that way come with a note naming the value that
+    did not fit. When nothing is found, the error says what was searched and what to try.
+
+    -Check also reports how the values fit the repository (coverage): files of a story-only kind
+    whose name codePattern does not recognize, and files with a recognized code that folderTemplate
+    or fileTemplate would not lead to. Test-Kit.ps1 warns when either is not 0.
 
 .EXAMPLE
     Get-GitSpecs.ps1 <story code>
@@ -167,36 +180,97 @@ function Invoke-Git {
     & git -C $Clone @args 2>$null
 }
 
+$FileCodePattern = [string](Get-KitValue $cfg "$ProviderKey.fileCodePattern")
+if (-not $FileCodePattern) { $FileCodePattern = $CodePattern }
+$GroupNames = @{}
+foreach ($pattern in $CodePattern, $FileCodePattern) { $GroupNames[$pattern] = @(([regex]$pattern).GetGroupNames() | Where-Object { $_ -notmatch '^\d+$' }) }
+
+# The parts of the story code a text holds, as the templates use them: an alias when one matches
+# (ignoring case), else upper-cased when listed in upper; then padded with zeros when listed in pad.
+# $null when the pattern (codePattern unless another is given) finds no code in the text.
+function Get-CodeParts([string]$Text, [string]$Pattern = $CodePattern) {
+    if ($Text -notmatch $Pattern) { return $null }
+    $found = $Matches.Clone()
+    $p = @{ root = $SpecRoot }
+    foreach ($name in $GroupNames[$Pattern]) {
+        $value = [string]$found[$name]
+        $alias = if ($Aliases -and $Aliases.PSObject.Properties[$name]) { $Aliases.$name.PSObject.Properties | Where-Object { $_.Name -ieq $value } | Select-Object -First 1 } else { $null }
+        if ($alias) { $value = [string]$alias.Value }
+        elseif ($name -in $Upper) { $value = $value.ToUpper() }
+        if ($Pad -and $Pad.PSObject.Properties[$name] -and $value -match '^\d+$') { $value = "{0:D$([int]$Pad.$name)}" -f [int]$value }
+        $p[$name] = $value
+    }
+    $p
+}
+
+function Expand-SpecTemplate([string]$Template, $Parts) {
+    [regex]::Replace($Template, '\{(\w+)\}', { param($m) [string]$Parts[$m.Groups[1].Value] }.GetNewClosure())
+}
+
+# The first kind whose expressions match a path, or $null.
+function Get-Kind([string]$Path) {
+    foreach ($k in $Kinds) {
+        if ($Path -match [string]$k.match -and (-not $k.exclude -or $Path -notmatch [string]$k.exclude)) { return $k }
+    }
+    $null
+}
+
+# What a person may have passed, from the most specific to the least: the text's last path segment
+# without extensions, then the same without its leading words; each with a letter and a digit, so a
+# plain word never matches half the repository.
+function Get-NameCandidates([string]$Text) {
+    $leaf = (($Text -replace '[?#].*$', '') -split '[\\/]')[-1] -replace '(\.[A-Za-z0-9]{1,8})+$', ''
+    $tokens = @($leaf -split '[^A-Za-z0-9]+' | Where-Object { $_ })
+    for ($i = 0; $i -lt $tokens.Count - 1; $i++) {
+        $c = $tokens[$i..($tokens.Count - 1)] -join '_'
+        if ($c.Length -ge 6 -and $c -match '\d' -and $c -match '[A-Za-z]') { $c }
+    }
+}
+
+# How well the configuration fits the repository. unrecognized: files of a kind only stories have
+# ("story": true) whose name fileCodePattern does not recognize. misplaced: files whose code it
+# recognizes but whose folder or name the templates would not lead to. Both should be 0.
+function Get-Coverage([string]$Ref) {
+    $typed = 0; $story = 0; $recognized = 0
+    $unrecognized = [Collections.Generic.List[string]]::new()
+    $misplaced = [Collections.Generic.List[string]]::new()
+    foreach ($f in @(Invoke-Git ls-tree -r --name-only $Ref "$SpecRoot/")) {
+        $k = Get-Kind $f
+        if (-not $k) { continue }
+        $typed++
+        $leaf = Split-Path $f -Leaf
+        $p = Get-CodeParts $leaf $FileCodePattern
+        if ($k.story -eq $true) { $story++; if (-not $p) { $unrecognized.Add($f) } }
+        if (-not $p) { continue }
+        $recognized++
+        if (-not $f.StartsWith((Expand-SpecTemplate $FolderTemplate $p), [StringComparison]::Ordinal) -or -not ($leaf -like "$(Expand-SpecTemplate $FileTemplate $p)*")) { $misplaced.Add($f) }
+    }
+    [pscustomobject]@{
+        ref = $Ref; files = $typed; storyFiles = $story; recognized = $recognized
+        unrecognized = $unrecognized.Count; misplaced = $misplaced.Count
+        examples = [pscustomobject]@{ unrecognized = @($unrecognized | Select-Object -First 5); misplaced = @($misplaced | Select-Object -First 5) }
+    }
+}
+
+$branch = Invoke-Git branch --show-current
+$dirty = Invoke-Git status --porcelain
+
 if ($Check) {
     $origin = Invoke-Git remote get-url origin
-    if ($Json) { [pscustomobject]@{ clone = $Clone; origin = "$origin"; branch = "$(Invoke-Git branch --show-current)" } | ConvertTo-Json; exit 0 }
+    # Offline: the clone as it is, or its last fetched copy of the branch when it is on another one.
+    $checkRef = if ($branch -eq $SpecBranch -and -not $dirty) { 'HEAD' } elseif (Invoke-Git rev-parse --verify --quiet "origin/$SpecBranch") { "origin/$SpecBranch" } else { 'HEAD' }
+    $coverage = Get-Coverage $checkRef
+    if ($Json) { [pscustomobject]@{ clone = $Clone; origin = "$origin"; branch = "$branch"; coverage = $coverage } | ConvertTo-Json -Depth 4; exit 0 }
     "Specification clone $Clone (origin $origin)"
+    "At $($coverage.ref): $($coverage.files) spec files, $($coverage.storyFiles) of a story-only kind, $($coverage.recognized) with a story code."
+    if ($coverage.unrecognized) { "$($coverage.unrecognized) story files have a name fileCodePattern does not recognize, e.g. $($coverage.examples.unrecognized -join ', ')" }
+    if ($coverage.misplaced) { "$($coverage.misplaced) files have a story code but folderTemplate or fileTemplate would not find them, e.g. $($coverage.examples.misplaced -join ', ')" }
     exit 0
 }
 
 if (-not $Story) { Stop-Kit 1 'Pass a story code, slug or spec link, or -Check.' }
-if ($Story -notmatch $CodePattern) { Stop-Kit 1 "Cannot find $CodeHelp in '$Story'." }
-$codeMatch = $Matches.Clone()
+$parts = Get-CodeParts $Story
 
-# Each named part of the code as the templates use it: an alias when one matches (ignoring case),
-# else upper-cased when listed in upper; then padded with zeros when listed in pad.
-$parts = @{ root = $SpecRoot }
-foreach ($name in ([regex]$CodePattern).GetGroupNames() | Where-Object { $_ -notmatch '^\d+$' }) {
-    $value = [string]$codeMatch[$name]
-    $alias = if ($Aliases -and $Aliases.PSObject.Properties[$name]) { $Aliases.$name.PSObject.Properties | Where-Object { $_.Name -ieq $value } | Select-Object -First 1 } else { $null }
-    if ($alias) { $value = [string]$alias.Value }
-    elseif ($name -in $Upper) { $value = $value.ToUpper() }
-    if ($Pad -and $Pad.PSObject.Properties[$name]) { $value = "{0:D$([int]$Pad.$name)}" -f [int]$value }
-    $parts[$name] = $value
-}
-function Expand-SpecTemplate([string]$Template) {
-    [regex]::Replace($Template, '\{(\w+)\}', { param($m) [string]$parts[$m.Groups[1].Value] })
-}
-$folder = Expand-SpecTemplate $FolderTemplate
-$prefix = Expand-SpecTemplate $FileTemplate
-
-$branch = Invoke-Git branch --show-current
-$dirty = Invoke-Git status --porcelain
 $ref = 'HEAD'
 $note = $null
 
@@ -214,13 +288,51 @@ else {
 }
 
 $head = Invoke-Git log -1 --format='%h %cd' --date=short $ref
-$files = @(Invoke-Git ls-tree -r --name-only $ref $folder | Where-Object { (Split-Path $_ -Leaf) -like "$prefix*" })
+$files = @()
+$fallback = $null
+$fallbackNote = $null
+$tried = [Collections.Generic.List[string]]::new()
+
+if ($parts) {
+    $folder = Expand-SpecTemplate $FolderTemplate $parts
+    $prefix = Expand-SpecTemplate $FileTemplate $parts
+    $files = @(Invoke-Git ls-tree -r --name-only $ref $folder | Where-Object { (Split-Path $_ -Leaf) -like "$prefix*" })
+    if (-not $files.Count -and $folder.TrimEnd('/') -ne $SpecRoot) {
+        $tried.Add("names starting with $prefix anywhere under $SpecRoot/")
+        $files = @(Invoke-Git ls-tree -r --name-only $ref "$SpecRoot/" | Where-Object { (Split-Path $_ -Leaf) -like "$prefix*" })
+        if ($files.Count) {
+            $fallback = 'whole-root'
+            $fallbackNote = "Found outside $folder, by searching all of $SpecRoot/: the pack's folderTemplate (providers.git-files) does not fit where this story's files are."
+        }
+    }
+}
+if (-not $files.Count) {
+    $all = @(Invoke-Git ls-tree -r --name-only $ref "$SpecRoot/")
+    $candidates = @(Get-NameCandidates $Story)
+    foreach ($candidate in $candidates) {
+        $hits = @($all | Where-Object { ('_' + ((Split-Path $_ -Leaf) -replace '[^A-Za-z0-9]+', '_') + '_').IndexOf("_$($candidate)_", [StringComparison]::OrdinalIgnoreCase) -ge 0 })
+        if (-not $hits.Count) { continue }
+        if ($hits.Count -gt 40) { $tried.Add("names containing '$candidate' ($($hits.Count) files: too many to be one story's)"); break }
+        $files = $hits
+        $fallback = 'name-search'
+        $fallbackNote = if ($parts) { "No file name starts with $prefix; these names contain '$candidate'. Check they are this story's: the pack's fileTemplate (providers.git-files) does not fit this story's file names." }
+        else { "The pack's codePattern (providers.git-files) does not recognize '$Story' as $CodeHelp; these names contain '$candidate'. Check they are this story's." }
+        break
+    }
+    if (-not $files.Count -and $candidates.Count -and -not @($tried | Where-Object { $_ -like 'names containing*' }).Count) { $tried.Add("names containing '$($candidates[0])' or a shorter tail of it") }
+}
 
 if (-not $files.Count) {
-    $msg = "No spec files for $prefix under $folder at $ref ($head)."
+    $msg = if ($parts) { "No spec files for $prefix under $folder at $ref ($head)." } else { "Cannot find $CodeHelp in '$Story'." }
+    if ($tried.Count) { $msg += " Also searched: $($tried -join '; ')." }
+    $msg += ' What to try:'
+    if (-not $parts) { $msg += " pass the story's code as its ticket's description writes it, or a link to one of its spec files;" }
+    $msg += " a story newer than the clone ($head) is not in it yet;"
+    $msg += " if the specification repository changed how it names or places files, the pack's providers.git-files values need updating (-Check counts the files they cannot find)."
     if ($note) { $msg += " $note" }
     Stop-Kit 1 $msg
 }
+if ($fallbackNote) { $note = if ($note) { "$note $fallbackNote" } else { $fallbackNote } }
 
 function Format-Path([string] $p) {
     if ($ref -ne 'HEAD') { return "${ref}:$p" }
@@ -240,7 +352,7 @@ foreach ($k in $Kinds) {
 foreach ($f in $files | Where-Object { -not $listed[$_] }) { $rows.Add([pscustomobject]@{ kind = 'other'; path = (Format-Path $f) }) }
 
 if ($Json) {
-    [pscustomobject]@{ clone = $Clone; ref = $ref; head = $head; note = $note; files = $rows.ToArray() } | ConvertTo-Json -Depth 4
+    [pscustomobject]@{ clone = $Clone; ref = $ref; head = $head; note = $note; fallback = $fallback; files = $rows.ToArray() } | ConvertTo-Json -Depth 4
     exit 0
 }
 "specifications $ref $head"
