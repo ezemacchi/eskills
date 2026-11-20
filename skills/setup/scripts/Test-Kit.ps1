@@ -393,7 +393,9 @@ else {
     $allow = @($defaults.kit.lint.allow)
     $patterns = @($defaults.kit.lint.patterns)
     $findings = 0
-    foreach ($file in Get-ChildItem -LiteralPath $SkillsRoot -Recurse -File -Include '*.md', '*.ps1', '*.json', '*.txt') {
+    # Only the kit's own skills: an installed kit shares its folder with the person's other skills.
+    $kitDirs = @($defaults.kit.skills | ForEach-Object { Join-Path $SkillsRoot $_ } | Where-Object { Test-Path -LiteralPath $_ -PathType Container })
+    foreach ($file in Get-ChildItem -LiteralPath $kitDirs -Recurse -File -Include '*.md', '*.ps1', '*.json', '*.txt') {
         $rel = [IO.Path]::GetRelativePath($SkillsRoot, $file.FullName) -replace '\\', '/'
         if (@($allow | Where-Object { $rel -like $_ }).Count) { continue }
         if ($file.Name -match '\.kit-new(\.[^.]*)?$' -or $file.Name -eq '.kit-installed.json') { continue }
