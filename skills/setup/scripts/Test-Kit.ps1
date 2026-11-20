@@ -907,6 +907,16 @@ if ($Fake -and $null -ne $defaults) {
         $d = Invoke-Kit $kitScripts.delivery @('deployed', '-Pr', '6', '-Json')
         $deployed = if ($d.code -eq 0) { ConvertFrom-KitJson $d.out }
         Add-Result 'fake' 'delivery deployed' $(if ($deployed.merged -and (@($deployed.publishes)[0]).verdict -eq 'IN') { 'ok' } else { 'fail' }) "PR 6 merged $($deployed.merged), last release $((@($deployed.publishes)[0]).verdict)"
+        $tn = ConvertFrom-KitJson (Invoke-Kit $kitScripts.delivery @('ticket', '-Key', 'FAKE-2', '-NoFetch', '-Json')).out
+        $envsNoFetch = @($tn.instances | ForEach-Object { "$($_.name) $($_.verdict)$(if ($_.firstVersion) { " from $($_.firstVersion)" })" }) -join ', '
+        Add-Result 'fake' 'delivery without fetch' $(if ($envsNoFetch -eq $envs) { 'ok' } else { 'fail' }) "FAKE-2 with -NoFetch: $envsNoFetch; expected the same as with the fetch"
+
+        $rv = @(ConvertFrom-KitJson (Invoke-Kit $kitScripts.repo @('prs', '-Role', 'reviewer', '-Json')).out | ForEach-Object { $_ })
+        Add-Result 'fake' 'repo reviews' $(if ($rv.Count -eq 1 -and $rv[0].id -eq 8 -and $rv[0].myReview -eq 'none' -and $rv[0].author -eq 'Dana Dev') { 'ok' } else { 'fail' }) "prs -Role reviewer: $(@($rv | ForEach-Object { "#$($_.id) by $($_.author), my review $($_.myReview)" }) -join '; '); expected #8 by Dana Dev, none"
+        $src = @(ConvertFrom-KitJson (Invoke-Kit $kitScripts.repo @('prs', '-Source', 'feature/FAKE-4-export', '-Json')).out | ForEach-Object { $_ })
+        Add-Result 'fake' 'repo branch' $(if ($src.Count -eq 1 -and $src[0].id -eq 8) { 'ok' } else { 'fail' }) "prs -Source feature/FAKE-4-export: $(@($src | ForEach-Object { "#$($_.id)" }) -join ', '); expected #8, someone else's"
+        $mg = ConvertFrom-KitJson (Invoke-Kit $kitScripts.repo @('mergeable', '-Pr', '7', '-Repo', 'demo', '-Project', 'DEMO', '-Json')).out
+        Add-Result 'fake' 'repo mergeable' $(if ($mg -and $mg.canMerge -eq $false -and @($mg.vetoDetails).Count -eq @($mg.vetoes).Count -and @($mg.vetoes).Count -eq 1) { 'ok' } else { 'fail' }) "canMerge $($mg.canMerge), $(@($mg.vetoes).Count) veto(es) with $(@($mg.vetoDetails).Count) detail(s)"
 
         $w = Invoke-Kit $kitScripts.board @('comment', '-Key', 'FAKE-1', '-Body', 'Retest passed on qa 1.1.0.', '-Json')
         $logged = Test-Path -LiteralPath (Join-Path $state 'fake-writes.jsonl')

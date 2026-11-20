@@ -293,7 +293,14 @@ foreach ($oldKey in @($briefState.qa.Keys)) {
     $oldAt = $briefState.qa[$oldKey].at
     if (-not $oldAt -or ((Get-Date) - [datetime]$oldAt).TotalDays -gt 30) { $briefState.qa.Remove($oldKey) }
 }
-function Save-BriefState { Set-Content -LiteralPath $statePath -Value (ConvertTo-Json -InputObject $briefState -Depth 10) -Encoding utf8 }
+# Written beside the file and renamed over it, so a reader or a second run sees the old file or the new
+# one, never half of one.
+function Save-KitFile([string]$Path, [string]$Text) {
+    $tmp = "$Path.$PID.tmp"
+    [IO.File]::WriteAllText($tmp, $Text, [Text.UTF8Encoding]::new($false))
+    [IO.File]::Move($tmp, $Path, $true)
+}
+function Save-BriefState { Save-KitFile $statePath ((ConvertTo-Json -InputObject $briefState -Depth 10) + [Environment]::NewLine) }
 
 # --- Running the other kit scripts (their -Json output only) ---------------------------------------
 
@@ -1053,8 +1060,8 @@ $brief = [ordered]@{
     files = [pscustomobject]@{ markdown = $mdPath; json = $jsonPath }
 }
 $briefJson = ConvertTo-Json -InputObject ([pscustomobject]$brief) -Depth 12
-Set-Content -LiteralPath $mdPath -Value $markdown -Encoding utf8 -NoNewline
-Set-Content -LiteralPath $jsonPath -Value $briefJson -Encoding utf8
+Save-KitFile $mdPath $markdown
+Save-KitFile $jsonPath ($briefJson + [Environment]::NewLine)
 
 if (-not $problems.Contains($boardName)) {
     foreach ($viewId in $nextViews.Keys) { $briefState.views[$viewId] = $nextViews[$viewId] }

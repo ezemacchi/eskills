@@ -14,9 +14,11 @@ for fetch, ancestry, ahead and behind counts and worktrees; every code host spea
 | Command | Output with `-Json` |
 |---|---|
 | `prs -State open\|merged [-Max n]` | `[ pullRequest ]`, the token owner's as author |
+| `prs -Role reviewer [-Max n]` | `[ pullRequest ]`, open, waiting on the token owner's review, each with `myReview` |
+| `prs -Source <branch> [-State open\|merged] [-Max n]` | `[ pullRequest ]` from that branch into the code repository, by anyone |
 | `checks -Commit <sha>` | `[ { key, state, url, build, pullRequestBuild } ]` |
 | `quality -Commit <sha> -Repo <slug> -Project <key>` | `{ result, name, link, details: [ string ] }` or `null` |
-| `mergeable -Pr <id> -Repo <slug> -Project <key>` | `{ conflicted, vetoes: [ string ] }` |
+| `mergeable -Pr <id> -Repo <slug> -Project <key>` | `{ canMerge, conflicted, vetoes: [ string ], vetoDetails: [ string ] }` |
 | `merge-commit -Pr <id> -Target <branch>[,<branch>] [-Clone <folder>]` | `{ pr, commit, target, subject }`; `commit` is `null` when not found |
 
 A pull request:
@@ -26,9 +28,16 @@ A pull request:
   "repo": "app", "project": "PRJ", "primary": true,
   "source": "feature/abc-12-thing", "target": "main",
   "latestCommit": "40-char sha",
+  "author": "...", "updated": "ISO 8601 or null",
   "reviewers": [ { "name": "...", "state": "approved" } ],
   "closedAt": "ISO 8601 or null" }
 ```
+
+- `author` (the author's display name) and `updated` are optional: a provider that cannot tell
+  leaves them out.
+- `myReview`, only with `-Role reviewer`, is the token owner's own verdict so far: `none` (not
+  reviewed yet) or `needsWork`. A pull request they approved no longer waits on them and is not listed.
+- `-Source` finds a branch's pull request whoever opened it: a worktree's branch may be someone else's.
 
 - `primary` is true for the project's code repository (the one cloned in `paths.codeRepo`). The brief
   counts behind commits and lists merged pull requests only for it.
@@ -36,6 +45,9 @@ A pull request:
 - `checks[].state` is `success`, `failed` or `running`, else the host's own word. `key` is the check's
   own name. `pullRequestBuild` marks a build of a pull-request job, which the brief prefers over the
   others. `build` is the CI build number when the check's address carries one.
+- `mergeable.canMerge` is the host's own answer (false while a veto holds or it conflicts);
+  `vetoes` are the short messages and `vetoDetails` the long ones, in the same order. `canMerge` and
+  `vetoDetails` are optional.
 - `quality.result` is `pass` or `fail`, else the host's own word. `name` is what the person calls the
   tool (Sonar), `details` the report's lines without decoration. `null` when the commit has no report.
 - `merge-commit` finds the commit that merged the pull request into one of the targets, from the

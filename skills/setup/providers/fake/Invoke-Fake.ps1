@@ -40,6 +40,8 @@ param(
     [string] $BodyFile,
     [string] $CommentId,
     [string] $State = 'open',
+    [string] $Role = 'author',
+    [string] $Source,
     [string] $Commit,
     [string] $Pr,
     [string] $Repo,
@@ -309,17 +311,19 @@ switch ($Command) {
 
     # --- repo --------------------------------------------------------------------------------------
     'prs' {
-        $list = if ($State -eq 'merged') {
-            @([pscustomobject]@{ id = 6; title = 'FAKE-2 Crash when saving an empty form'; link = 'fake://repo/pull/6'; repo = 'demo'; project = 'DEMO'; primary = $true; source = 'fix/FAKE-2-save-crash'; target = 'main'; latestCommit = (Get-ShaByMessage 'FAKE-2'); reviewers = @([pscustomobject]@{ name = 'Robin Reviewer'; state = 'approved' }); closedAt = $now.AddDays(-1).ToString('o') })
-        }
-        else {
-            @([pscustomobject]@{ id = 7; title = 'FAKE-3 Monthly report'; link = 'fake://repo/pull/7'; repo = 'demo'; project = 'DEMO'; primary = $true; source = 'feature/FAKE-3-monthly-report'; target = 'main'; latestCommit = (Get-Sha 'origin/feature/FAKE-3-monthly-report'); reviewers = @([pscustomobject]@{ name = 'Robin Reviewer'; state = 'needsWork' }); closedAt = $null })
-        }
+        $merged = [pscustomobject]@{ id = 6; title = 'FAKE-2 Crash when saving an empty form'; link = 'fake://repo/pull/6'; repo = 'demo'; project = 'DEMO'; primary = $true; source = 'fix/FAKE-2-save-crash'; target = 'main'; latestCommit = (Get-ShaByMessage 'FAKE-2'); author = 'Fake Person'; updated = $now.AddDays(-1).ToString('o'); reviewers = @([pscustomobject]@{ name = 'Robin Reviewer'; state = 'approved' }); closedAt = $now.AddDays(-1).ToString('o') }
+        $mine = [pscustomobject]@{ id = 7; title = 'FAKE-3 Monthly report'; link = 'fake://repo/pull/7'; repo = 'demo'; project = 'DEMO'; primary = $true; source = 'feature/FAKE-3-monthly-report'; target = 'main'; latestCommit = (Get-Sha 'origin/feature/FAKE-3-monthly-report'); author = 'Fake Person'; updated = $now.AddHours(-3).ToString('o'); reviewers = @([pscustomobject]@{ name = 'Robin Reviewer'; state = 'needsWork' }); closedAt = $null }
+        # Someone else's pull request: it waits on the person's review, and a -Source search finds it by its branch.
+        $theirs = [pscustomobject]@{ id = 8; title = 'FAKE-4 Export to CSV'; link = 'fake://repo/pull/8'; repo = 'demo'; project = 'DEMO'; primary = $true; source = 'feature/FAKE-4-export'; target = 'main'; latestCommit = (Get-Sha 'origin/main'); author = 'Dana Dev'; updated = $now.AddHours(-1).ToString('o'); reviewers = @([pscustomobject]@{ name = 'Fake Person'; state = 'none' }); closedAt = $null }
+        $list = if ($Role -eq 'reviewer') { @($theirs | Select-Object *, @{ n = 'myReview'; e = { 'none' } }) }
+        elseif ($Source) { @(@($mine, $theirs, $merged) | Where-Object { $_.source -eq $Source -and (($State -eq 'merged') -eq [bool]$_.closedAt) }) }
+        elseif ($State -eq 'merged') { @($merged) }
+        else { @($mine) }
         Out-Contract @($list)
     }
     'checks' { Out-Contract @([pscustomobject]@{ key = 'demo/PR-7'; state = 'failed'; url = 'fake://ci/job/PR-7/3/display/redirect'; build = '3'; pullRequestBuild = $true }) }
     'quality' { Out-Contract ([pscustomobject]@{ result = 'fail'; name = 'Quality'; link = 'fake://quality/demo'; details = @('Coverage 41% is below 80%') }) }
-    'mergeable' { Out-Contract ([pscustomobject]@{ conflicted = $false; vetoes = @() }) }
+    'mergeable' { Out-Contract ([pscustomobject]@{ canMerge = $false; conflicted = $false; vetoes = @('Not all required builds are successful yet'); vetoDetails = @('You need a minimum of one successful build before this pull request can be merged.') }) }
     'merge-commit' {
         $sha = if ($Pr -eq '6') { Get-ShaByMessage 'FAKE-2' } else { $null }
         Out-Contract ([pscustomobject]@{ pr = [int]$Pr; commit = $sha; target = $(if ($sha) { 'main' } else { $null }); subject = $(if ($sha) { 'FAKE-2 save crash' } else { $null }) })

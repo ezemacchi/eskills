@@ -14,6 +14,12 @@
       prs [-State open|merged] [-Max 50]
                        the token owner's pull requests as author, in every repository. "primary" is
                        true for the configured code repository.
+      prs -Role reviewer
+                       the open pull requests that wait on the token owner's review: they are a
+                       reviewer and have not approved ("myReview": none or needsWork).
+      prs -Source <branch> [-State open|merged]
+                       the pull requests from that branch into the configured code repository, by
+                       anyone.
       checks -Commit <sha>
                        the builds the CI reported on that commit. "pullRequestBuild" marks a build of
                        a pull-request job (Jenkins names them .../PR-<n>).
@@ -21,7 +27,8 @@
                        the quality report (providers.bitbucket-server.sonarReportKey), or null when the
                        commit has none or no report key is configured.
       mergeable -Pr <id> -Repo <slug> -Project <key>
-                       whether the pull request conflicts, and what vetoes its merge.
+                       whether the pull request can merge, whether it conflicts, and what vetoes its
+                       merge (the short message, and the detailed one in vetoDetails).
       merge-commit -Pr <id> -Target <branch[,branch]> [-Clone <folder>]
                        the commit that merged the pull request into one of the branches, from the
                        clone's history (paths.codeRepo unless -Clone): Bitbucket writes "Pull request
@@ -38,6 +45,9 @@ param(
     [string] $Command,
     [ValidateSet('open', 'merged')]
     [string] $State = 'open',
+    [ValidateSet('author', 'reviewer')]
+    [string] $Role = 'author',
+    [string] $Source,
     [int] $Max = 50,
     [string] $Commit,
     [string] $Pr,
@@ -239,23 +249,56 @@ function ConvertTo-CheckState([string]$Raw) {
     $Raw
 }
 
+function ConvertTo-PullRequest($Raw, [string]$MyReview) {
+    $slug = [string]$Raw.toRef.repository.slug
+    $item = [ordered]@{
+        id = $Raw.id; title = [string]$Raw.title; link = [string]$Raw.links.self[0].href
+        repo = $slug; project = [string]$Raw.toRef.repository.project.key; primary = ($slug -eq $MainRepo)
+        source = [string]$Raw.fromRef.displayId; target = [string]$Raw.toRef.displayId; latestCommit = [string]$Raw.fromRef.latestCommit
+        author = $(if ($Raw.author.user.displayName) { [string]$Raw.author.user.displayName } else { [string]$Raw.author.user.name })
+        updated = $(if ($Raw.updatedDate) { [DateTimeOffset]::FromUnixTimeMilliseconds([long]$Raw.updatedDate).ToString('o') } else { $null })
+        reviewers = @($Raw.reviewers | Where-Object { $_ } | ForEach-Object {
+                [pscustomobject]@{ name = [string]$_.user.displayName; state = $(switch ([string]$_.status) { 'APPROVED' { 'approved' } 'NEEDS_WORK' { 'needsWork' } default { 'none' } }) }
+            })
+        closedAt = $(if ($Raw.closedDate) { [DateTimeOffset]::FromUnixTimeMilliseconds([long]$Raw.closedDate).ToString('o') } else { $null })
+    }
+    if ($MyReview) { $item.myReview = $MyReview }
+    [pscustomobject]$item
+}
+
+function Get-PageValues($Page) {
+    if ($null -eq $Page -or -not $Page.PSObject.Properties['values']) { Stop-Kit 1 'Unexpected answer from Bitbucket for the pull request list.' }
+    @($Page.values | Where-Object { $_ })
+}
+
 switch ($Command) {
     'prs' {
         $Max = [Math]::Min([Math]::Max($Max, 1), 100)
-        $page = Invoke-Bb "/rest/api/1.0/dashboard/pull-requests?role=AUTHOR&state=$($State.ToUpperInvariant())&limit=$Max"
-        if ($null -eq $page -or -not $page.PSObject.Properties['values']) { Stop-Kit 1 'Unexpected answer from Bitbucket for the pull request list.' }
-        $list = @($page.values | Where-Object { $_ } | ForEach-Object {
-                $slug = [string]$_.toRef.repository.slug
-                [pscustomobject]@{
-                    id = $_.id; title = [string]$_.title; link = [string]$_.links.self[0].href
-                    repo = $slug; project = [string]$_.toRef.repository.project.key; primary = ($slug -eq $MainRepo)
-                    source = [string]$_.fromRef.displayId; target = [string]$_.toRef.displayId; latestCommit = [string]$_.fromRef.latestCommit
-                    reviewers = @($_.reviewers | Where-Object { $_ } | ForEach-Object {
-                            [pscustomobject]@{ name = [string]$_.user.displayName; state = $(switch ([string]$_.status) { 'APPROVED' { 'approved' } 'NEEDS_WORK' { 'needsWork' } default { 'none' } }) }
-                        })
-                    closedAt = $(if ($_.closedDate) { [DateTimeOffset]::FromUnixTimeMilliseconds([long]$_.closedDate).ToString('o') } else { $null })
-                }
-            })
+        if ($Source -and $Role -eq 'reviewer') { Stop-Kit 1 'prs takes -Source or -Role reviewer, not both.' }
+        if ($Role -eq 'reviewer' -and $PSBoundParameters.ContainsKey('State') -and $State -ne 'open') { Stop-Kit 1 'prs -Role reviewer lists open pull requests only.' }
+        $list = @(if ($Source) {
+            # Any author: the code repository's pull requests whose source is that branch.
+            $MainProject = [string](Get-KitValue $cfg "$ProviderKey.project" -Required)
+            $branchRef = [uri]::EscapeDataString("refs/heads/$Source")
+            @(Get-PageValues (Invoke-Bb "/rest/api/1.0/projects/$MainProject/repos/$MainRepo/pull-requests?direction=OUTGOING&at=$branchRef&state=$($State.ToUpperInvariant())&limit=$Max") |
+                ForEach-Object { ConvertTo-PullRequest $_ $null })
+        }
+        elseif ($Role -eq 'reviewer') {
+            # The dashboard answers for the token's owner: still unapproved, or marked needs work.
+            $seen = @{}
+            @(foreach ($pair in @(@('UNAPPROVED', 'none'), @('NEEDS_WORK', 'needsWork'))) {
+                    foreach ($raw in (Get-PageValues (Invoke-Bb "/rest/api/1.0/dashboard/pull-requests?role=REVIEWER&state=OPEN&participantStatus=$($pair[0])&limit=$Max"))) {
+                        $id = "$($raw.toRef.repository.project.key)/$($raw.toRef.repository.slug)/$($raw.id)"
+                        if ($seen[$id]) { continue }
+                        $seen[$id] = $true
+                        ConvertTo-PullRequest $raw $pair[1]
+                    }
+                })
+        }
+        else {
+            @(Get-PageValues (Invoke-Bb "/rest/api/1.0/dashboard/pull-requests?role=AUTHOR&state=$($State.ToUpperInvariant())&limit=$Max") |
+                ForEach-Object { ConvertTo-PullRequest $_ $null })
+        })
         if ($Json) { ConvertTo-Json -InputObject $list -Depth 6; break }
         if (-not $list.Count) { 'No pull requests.'; break }
         foreach ($p in $list) { "#$($p.id) | $($p.repo) | $($p.source) -> $($p.target) | $($p.title) | $($p.link)" }
@@ -296,9 +339,13 @@ switch ($Command) {
         if ($Pr -notmatch '^\d+$') { Stop-Kit 1 "-Pr must be the pull request's number, got '$Pr'." }
         if (-not $Repo -or -not $Project) { Stop-Kit 1 'mergeable needs -Repo (the slug) and -Project (the key), as prs prints them.' }
         $m = Invoke-Bb "/rest/api/1.0/projects/$Project/repos/$Repo/pull-requests/$Pr/merge"
-        $out = [pscustomobject]@{ conflicted = [bool]$m.conflicted; vetoes = @($m.vetoes | Where-Object { $_ } | ForEach-Object { [string]$_.summaryMessage }) }
+        $out = [pscustomobject]@{
+            canMerge = [bool]$m.canMerge; conflicted = [bool]$m.conflicted
+            vetoes = @($m.vetoes | Where-Object { $_ } | ForEach-Object { [string]$_.summaryMessage })
+            vetoDetails = @($m.vetoes | Where-Object { $_ } | ForEach-Object { [string]$_.detailedMessage })
+        }
         if ($Json) { ConvertTo-Json -InputObject $out -Depth 3; break }
-        "conflicted: $($out.conflicted)$(if ($out.vetoes.Count) { "; vetoes: $($out.vetoes -join '; ')" })"
+        "can merge: $($out.canMerge); conflicted: $($out.conflicted)$(if ($out.vetoes.Count) { "; vetoes: $($out.vetoes -join '; ')" })"
     }
 }
 exit 0

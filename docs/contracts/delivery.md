@@ -13,8 +13,12 @@ for a merged pull request. This is engine logic, not a provider. It joins:
 
 | Command | Output with `-Json` |
 |---|---|
-| `ticket -Key <key>` | ticket delivery, below |
-| `deployed -Pr <id>` | `{ pr, commit, merged, publishes: [ publish ], instances: [ instance ] }` |
+| `ticket -Key <key> [-NoFetch]` | ticket delivery, below |
+| `deployed -Pr <id> [-NoFetch]` | `{ pr, commit, merged, publishes: [ publish ], instances: [ instance ] }` |
+
+Both fetch the target branches into the code clone first (`ticket` also the tags). `-NoFetch` reads the
+clone as it is, for a caller that fetches on its own schedule: two fetches at once in one clone collide
+on git's lock.
 
 Ticket delivery:
 

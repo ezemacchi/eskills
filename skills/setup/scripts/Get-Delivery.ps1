@@ -14,6 +14,9 @@
                                or a commit is in the last publish of each target and in each environment
 
     Git runs in the code clone (paths.codeRepo, or -Repo); a partial clone without files is enough.
+    Both commands fetch the target branches first (and ticket, the tags). -NoFetch skips that and reads
+    the clone as it is: for a caller that fetches on its own schedule, so two fetches never run in the
+    same clone at once.
     The cd provider gives the target branches (targets), each environment's version, branch and the
     commit of that version (environments), and the last publishes (publishes). A ticket's commits are
     those whose message names the key with word boundaries; the key must look like the board's keys
@@ -35,6 +38,7 @@ param(
     [int] $Pr,
     [string] $Commit,
     [string] $Repo,
+    [switch] $NoFetch,
     [switch] $Json
 )
 
@@ -269,7 +273,7 @@ function Write-InstanceLines($Rows) {
 function Get-DeployedData {
     Assert-Repo
     $targets = Get-Targets
-    Invoke-Git fetch --quiet origin @targets | Out-Null
+    if (-not $NoFetch) { Invoke-Git fetch --quiet origin @targets | Out-Null }
     $target = $Commit
     $merged = $true
     if (-not $target) {
@@ -303,7 +307,7 @@ function Get-TicketData {
     if (-not $Key -or $Key -notmatch $keyPattern) { Stop-Kit 1 "ticket needs -Key, a ticket key ($keyPattern)." }
     Assert-Repo
     $targets = Get-Targets
-    Invoke-Git fetch --quiet --tags origin @targets | Out-Null
+    if (-not $NoFetch) { Invoke-Git fetch --quiet --tags origin @targets | Out-Null }
 
     $branches = @(Invoke-Git branch -r --list "origin/*$Key*" | ForEach-Object { $_.Trim() } | ForEach-Object {
             $b = $_

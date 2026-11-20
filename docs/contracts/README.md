@@ -95,6 +95,35 @@ A capability is on when `capabilities.<name>.provider` names a provider and `ena
 `init` records the script of each capability that is on as `scripts.<capability>`, which is what the
 skills run.
 
+## Using the kit from another tool
+
+A tool outside the kit (a board, a dashboard) uses the same commands the skills use, and nothing
+else. What it can rely on:
+
+- **Finding an installed kit.** Every installed skill folder holds a `.kit` file whose text is the
+  kit's name (in the agent's skills folder: `.cursor\skills\<skill>\.kit` or `.claude\skills\<skill>\.kit`).
+  The name gives the configuration variable: upper case, every character that is not a letter or a
+  digit replaced by `_`, then `_CONFIG` (`team-skills` gives `TEAM_SKILLS_CONFIG`). The person's
+  configuration is the file that variable names (in the process, else the user's saved variables),
+  else `%LOCALAPPDATA%\<name>\config.json`.
+- **The scripts.** `scripts.<name>` in that file is the full path of each script: `setup`, `brief`,
+  `chief`, `delivery`, and one per capability that is on (`board`, `repo`, `ci`, `cd`, `chat`,
+  `specs`). A capability with no entry is off: leave it out, it is not an error.
+- **The effective configuration.** `pwsh -NoProfile -File <scripts.setup> show -Effective` prints it
+  (`get -Key a.b` prints one value): which capabilities are on, the person's views, roles and
+  language, the environment testers use (`delivery.qaEnvironment`), and `providerInfo.<capability>`
+  (each service's display name, ticket link and key pattern). Read it again when the person's file
+  changes.
+- **The commands.** The ones in these contracts, with `-Json`; their exit codes are the table above.
+  Nothing else is stable: the text output, files in the state folder, and the providers' own extra
+  commands may change.
+- **Writes.** The write guard is a hook of the agent: it does not see what another program runs. A
+  tool that writes (`comment`, `edit-comment`, `transition`) shows the person exactly what will be
+  written and runs it only after an explicit confirmation, one write at a time, with the text in a
+  file (`-BodyFile`).
+- **Credentials.** The tool never reads, stores or asks for them; the scripts read them from the
+  person's variables.
+
 ## Versions
 
 A contract changes only by adding: new optional commands, new optional fields. A field is never

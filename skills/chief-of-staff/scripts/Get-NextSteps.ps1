@@ -272,6 +272,14 @@ $planPath = Join-Path $stateDir 'next-steps.json'
 $logPath = Join-Path $stateDir 'chief-state.json'
 $logMax = 500
 
+# Written beside the file and renamed over it, so a reader or a second run sees the old file or the new
+# one, never half of one.
+function Save-KitFile([string]$Path, [string]$Text) {
+    $tmp = "$Path.$PID.tmp"
+    [IO.File]::WriteAllText($tmp, $Text, [Text.UTF8Encoding]::new($false))
+    [IO.File]::Move($tmp, $Path, $true)
+}
+
 $actionDefs = Get-KitValue $cfg 'chief.actions'
 $knownActions = @(if ($actionDefs) { $actionDefs.PSObject.Properties | ForEach-Object { $_.Name } })
 if (-not $knownActions.Count) { Stop-Kit 2 'The configuration has no chief.actions. Reinstall the kit.' }
@@ -462,7 +470,7 @@ if ($Command -eq 'record') {
     foreach ($old in @(Read-Log)) { $entries.Add($old) }
     $entries.Add([pscustomobject]$entry)
     $kept = @($entries | Select-Object -Last $logMax)
-    Set-Content -LiteralPath $logPath -Value (ConvertTo-Json -InputObject ([pscustomobject]@{ log = $kept }) -Depth 6) -Encoding utf8
+    Save-KitFile $logPath ((ConvertTo-Json -InputObject ([pscustomobject]@{ log = $kept }) -Depth 6) + [Environment]::NewLine)
     if ($Json) { [pscustomobject]$entry | ConvertTo-Json -Depth 4 }
     else {
         Phrase 'record.ok' @{ key = $Key; label = (Get-ActionText 'label' $chosen @{ instance = $qaName }); outcome = (Phrase "outcome.$Outcome") }
@@ -718,7 +726,7 @@ $plan = [pscustomobject]@{
     template = [pscustomobject]@{ team = $tpl.team; mine = $tpl.mine; minePath = $tpl.minePath; unknown = $tpl.unknown }
 }
 $planJson = ConvertTo-Json -InputObject $plan -Depth 10
-Set-Content -LiteralPath $planPath -Value $planJson -Encoding utf8
+Save-KitFile $planPath ($planJson + [Environment]::NewLine)
 
 if ($Json) { $planJson } else { $markdown }
 exit $(if ($problemServices.Count) { 3 } else { 0 })
