@@ -6,6 +6,9 @@
   "user": {
     "pullRequests": false
   },
+  "chief": {
+    "use": { "test": true, "comment": true, "answer": true, "teams": true, "writeTests": true, "finishTests": true }
+  },
   "board": {
     "views": [
       {

@@ -17,8 +17,22 @@
       testStatuses  at least one linked test is in one of these statuses
       staleDays     the ticket has not been updated for at least this many days (needs "updated" in
                     the view's fields)
-    Actions: test, comment, answer, teams, writeTests, finishTests. The agent performs them, each only
-    after the person says yes.
+    A rule may carry its own reason ("reason": { "<language>": "text" }), used when the template has
+    no @reason.<rule id>.
+
+    Actions come from chief.actions, keyed by name. The kit's are test, comment, answer, teams,
+    writeTests and finishTests; a pack or a role adds its own. An action may say:
+      needs      capabilities that must be on; otherwise no rule proposes it
+      recipient  "developer": the plan names the person to write to (the assignee when it is someone
+                 else, else the newest author in git)
+      label      { "<language>": "text" }, used when the template has no @label.<name>
+      text       { "<language>": "text" }, the proposal ({{instance}}, {{who}}), when it has no @action.<name>.
+                 It completes the plan's "I suggest: ...": lower case, no final period
+      how        for the agent: how to carry it out. The plan lists it for the actions it proposes
+    chief.use says which actions the person uses ({ "<name>": true }); roles set it, and several roles
+    add theirs up. A rule whose action the person does not use proposes nothing. When no action is
+    named in chief.use, every action is used. The agent performs them, each only after the person
+    says yes.
 
     What the person decided is recorded in paths.stateDir\chief-state.json with "record", and decides
     whether the ticket is proposed again:
@@ -258,7 +272,11 @@ $planPath = Join-Path $stateDir 'next-steps.json'
 $logPath = Join-Path $stateDir 'chief-state.json'
 $logMax = 500
 
-$knownActions = 'test', 'comment', 'answer', 'teams', 'writeTests', 'finishTests'
+$actionDefs = Get-KitValue $cfg 'chief.actions'
+$knownActions = @(if ($actionDefs) { $actionDefs.PSObject.Properties | ForEach-Object { $_.Name } })
+if (-not $knownActions.Count) { Stop-Kit 2 'The configuration has no chief.actions. Reinstall the kit.' }
+$useMap = Get-KitValue $cfg 'chief.use'
+$usedActions = @(if ($useMap) { $useMap.PSObject.Properties | Where-Object { $_.Value -eq $true } | ForEach-Object { $_.Name } })
 $rules = @(Get-KitValue $cfg 'chief.rules' | Where-Object { $_ })
 if (-not $rules.Count) { Stop-Kit 2 'The configuration has no chief.rules. Run /setup.' }
 foreach ($rule in $rules) {
@@ -266,7 +284,57 @@ foreach ($rule in $rules) {
     if ([string]$rule.action -cnotin $knownActions) { Stop-Kit 1 "chief.rules '$($rule.id)' has the action '$($rule.action)'. Known: $($knownActions -join ', ')." }
 }
 $qaName = [string](Get-KitValue $cfg 'delivery.qaEnvironment')
-$hasChat = Test-KitCapability $cfg 'chat'
+$textLanguages = @([string](Get-KitValue $cfg 'user.language'), [string](Get-KitValue $cfg 'kit.templateFallback')) | Where-Object { $_ }
+
+function Get-ActionDef([string]$Name) {
+    if ($actionDefs -and $actionDefs.PSObject.Properties[$Name]) { return $actionDefs.$Name }
+    $null
+}
+
+# Whether the person uses an action (chief.use; all of them when it names none) and its capabilities are on.
+function Test-ActionUsable([string]$Name) {
+    if ($usedActions.Count -and $Name -cnotin $usedActions) { return $false }
+    $def = Get-ActionDef $Name
+    $needs = if ($def -and $def.PSObject.Properties['needs']) { @($def.needs) } else { @() }
+    foreach ($capability in @($needs | Where-Object { $_ })) {
+        if (-not (Test-KitCapability $cfg ([string]$capability))) { return $false }
+    }
+    $true
+}
+
+# A text kept in the configuration, by language: the person's, else the fallback, else any.
+function Get-InlineText($Map) {
+    if ($null -eq $Map) { return $null }
+    if ($Map -is [string]) { return $Map }
+    foreach ($lang in $textLanguages) { if ($Map.PSObject.Properties[$lang] -and $Map.$lang) { return [string]$Map.$lang } }
+    $any = @($Map.PSObject.Properties | Where-Object { $_.Value }) | Select-Object -First 1
+    if ($any) { [string]$any.Value } else { $null }
+}
+
+function Format-InlineText([string]$Text, [hashtable]$Values) {
+    if (-not $Values.ContainsKey('board')) { $Values['board'] = $script:boardName }
+    if (-not $Values.ContainsKey('chat')) { $Values['chat'] = $script:chatName }
+    $fill = { param($m) $found = $Values[$m.Groups[1].Value]; if ($null -eq $found) { '' } else { [string]$found } }.GetNewClosure()
+    [regex]::Replace($Text, '\{\{([A-Za-z0-9_]+)\}\}', [Text.RegularExpressions.MatchEvaluator]$fill)
+}
+
+# An action's label or proposal: the template's text, else the action's own, else its name.
+function Get-ActionText([string]$Kind, [string]$Name, [hashtable]$Values = @{}) {
+    if ($tpl.snippets.Contains("$Kind.$Name")) { return Phrase "$Kind.$Name" $Values }
+    $def = Get-ActionDef $Name
+    $field = if ($Kind -eq 'label') { 'label' } else { 'text' }
+    $own = if ($def -and $def.PSObject.Properties[$field]) { Get-InlineText $def.$field } else { $null }
+    if ($own) { return Format-InlineText $own $Values }
+    $Name
+}
+
+# Why a rule proposes its action: the template's text, else the rule's own, else the general one.
+function Get-RuleReason($Rule, [hashtable]$Values) {
+    if ($tpl.snippets.Contains("reason.$($Rule.id)")) { return Phrase "reason.$($Rule.id)" $Values }
+    $own = if ($Rule.PSObject.Properties['reason']) { Get-InlineText $Rule.reason } else { $null }
+    if ($own) { return Format-InlineText $own $Values }
+    Phrase 'reason.other' $Values
+}
 $chatInfo = Get-KitValue $cfg 'providerInfo.chat'
 $script:chatName = if ($chatInfo -and $chatInfo.displayName) { [string]$chatInfo.displayName } else { 'chat' }
 $boardInfo = Get-KitValue $cfg 'providerInfo.board'
@@ -277,7 +345,20 @@ $keyPattern = if ($boardInfo -and $boardInfo.keyPattern) { [string]$boardInfo.ke
 if ($Command -eq 'check') {
     $briefScriptPath = [string](Get-KitValue $cfg 'scripts.brief')
     [pscustomobject]@{
-        rules = @($rules | ForEach-Object { [pscustomobject]@{ id = $_.id; action = $_.action; reason = $(if ($tpl.snippets.Contains("reason.$($_.id)")) { "reason.$($_.id)" } else { 'reason.other' }) } })
+        rules = @($rules | ForEach-Object {
+                [pscustomobject]@{
+                    id = $_.id; action = $_.action; used = (Test-ActionUsable ([string]$_.action))
+                    reason = $(if ($tpl.snippets.Contains("reason.$($_.id)")) { "reason.$($_.id)" } elseif ($_.PSObject.Properties['reason'] -and $_.reason) { 'own' } else { 'reason.other' })
+                }
+            })
+        actions = @($knownActions | ForEach-Object {
+                $def = Get-ActionDef $_
+                [pscustomobject]@{
+                    name = $_; used = (Test-ActionUsable $_); label = (Get-ActionText 'label' $_ @{ instance = $qaName })
+                    texts = $(if ($tpl.snippets.Contains("action.$_")) { 'template' } elseif ($def -and $def.PSObject.Properties['text']) { 'own' } else { 'missing' })
+                    how = $(if ($def -and $def.PSObject.Properties['how']) { [string]$def.how } else { $null })
+                }
+            })
         brief = $(if ($briefScriptPath -and (Test-Path -LiteralPath $briefScriptPath -PathType Leaf)) { 'found' } else { 'missing: run /setup (init)' })
         stateDir = $stateDir
         template = [pscustomobject]@{ team = $tpl.team; mine = $tpl.mine; minePath = $tpl.minePath; unknown = $tpl.unknown }
@@ -333,7 +414,7 @@ if ($Command -eq 'history') {
     foreach ($entry in $shown) {
         $historyLines += Phrase 'history.line' @{
             when = (Format-Moment $entry.at); key = $entry.key; link = $entry.link
-            label = (Phrase "label.$($entry.action)" @{ instance = $qaName }); outcome = (Phrase "outcome.$($entry.outcome)")
+            label = (Get-ActionText 'label' ([string]$entry.action) @{ instance = $qaName }); outcome = (Phrase "outcome.$($entry.outcome)")
             note = $(if ($entry.note) { Phrase 'plan.note' @{ note = $entry.note } })
         }
     }
@@ -384,7 +465,7 @@ if ($Command -eq 'record') {
     Set-Content -LiteralPath $logPath -Value (ConvertTo-Json -InputObject ([pscustomobject]@{ log = $kept }) -Depth 6) -Encoding utf8
     if ($Json) { [pscustomobject]$entry | ConvertTo-Json -Depth 4 }
     else {
-        Phrase 'record.ok' @{ key = $Key; label = (Phrase "label.$chosen" @{ instance = $qaName }); outcome = (Phrase "outcome.$Outcome") }
+        Phrase 'record.ok' @{ key = $Key; label = (Get-ActionText 'label' $chosen @{ instance = $qaName }); outcome = (Phrase "outcome.$Outcome") }
     }
     exit 0
 }
@@ -426,7 +507,7 @@ function Get-IdleDays($Row) {
 }
 
 function Test-Rule($Rule, $View, $Row) {
-    if ([string]$Rule.action -ceq 'teams' -and -not $hasChat) { return $false }
+    if (-not (Test-ActionUsable ([string]$Rule.action))) { return $false }
     if ($Rule.views -and [string]$View.id -notin @($Rule.views)) { return $false }
     if ($Rule.statuses -and [string]$Row.status -notin @($Rule.statuses)) { return $false }
     if ($Rule.qa -and (-not $Row.qa -or [string]$Row.qa.verdict -ne [string]$Rule.qa)) { return $false }
@@ -578,25 +659,25 @@ foreach ($pick in $chosenItems) {
     $n++
     $row = $pick.row
     $check = $row.qa
-    $developer = if ($pick.action -eq 'teams') { Get-Developer $row } else { $null }
+    $actionDef = Get-ActionDef $pick.action
+    $developer = if ($actionDef -and $actionDef.PSObject.Properties['recipient'] -and [string]$actionDef.recipient -eq 'developer') { Get-Developer $row } else { $null }
     $instanceName = if ($check -and $check.instance) { $check.instance } else { $qaName }
     $values = @{
         instance = $instanceName; version = $(if ($check) { $check.version }); via = (Get-Via $check)
         status = $row.status; arrives = (Get-Arrives $check); tests = (Format-Tests $row.tests)
         days = (Get-IdleDays $row); rule = $pick.rule.id
     }
-    $reasonName = "reason.$($pick.rule.id)"
-    $reason = if ($tpl.snippets.Contains($reasonName)) { Phrase $reasonName $values } else { Phrase 'reason.other' $values }
+    $reason = Get-RuleReason $pick.rule $values
     $who = if ($developer) { Phrase 'who.person' @{ name = $developer.name; alias = $developer.alias } } else { Phrase 'who.unknown' }
-    $actionText = Phrase "action.$($pick.action)" @{ instance = $instanceName; who = $who }
-    $label = Phrase "label.$($pick.action)" @{ instance = $instanceName }
+    $actionText = Get-ActionText 'action' $pick.action @{ instance = $instanceName; who = $who }
+    $label = Get-ActionText 'label' $pick.action @{ instance = $instanceName }
     $text = Phrase 'plan.item' @{
         n = $n; key = $row.key; link = $row.link; summary = $(if ($row.PSObject.Properties['summary']) { $row.summary }); status = $row.status
         reason = $reason; action = $actionText; view = $pick.view.title
     }
     if ($pick.prior) {
         $text += "`n" + (Phrase 'plan.last' @{
-                label = (Phrase "label.$($pick.prior.action)" @{ instance = $instanceName }); outcome = (Phrase "outcome.$($pick.prior.outcome)")
+                label = (Get-ActionText 'label' ([string]$pick.prior.action) @{ instance = $instanceName }); outcome = (Phrase "outcome.$($pick.prior.outcome)")
                 when = (Format-Day $pick.prior.at); note = $(if ($pick.prior.note) { Phrase 'plan.note' @{ note = $pick.prior.note } })
             })
     }
@@ -610,7 +691,7 @@ foreach ($pick in $chosenItems) {
 
 $skippedTexts = @(foreach ($gone in $skipped) {
         Phrase "skipped.$($gone.outcome)" @{
-            key = $gone.key; label = (Phrase "label.$($gone.action)" @{ instance = $qaName })
+            key = $gone.key; label = (Get-ActionText 'label' ([string]$gone.action) @{ instance = $qaName })
             when = (Format-Day $gone.at); until = (Format-Day $gone.until)
         }
     })
@@ -628,6 +709,10 @@ $plan = [pscustomobject]@{
     qaInstance = [pscustomobject]@{ name = $qaName; version = $qaVersionNow }
     problems = @($brief.problems | Where-Object { $_ })
     items = @($planItems)
+    actions = @($planItems | ForEach-Object { [string]$_.action } | Select-Object -Unique | ForEach-Object {
+            $def = Get-ActionDef $_
+            [pscustomobject]@{ name = $_; label = (Get-ActionText 'label' $_ @{ instance = $qaName }); how = $(if ($def -and $def.PSObject.Properties['how']) { [string]$def.how } else { $null }) }
+        })
     more = $more
     skipped = @($skipped)
     template = [pscustomobject]@{ team = $tpl.team; mine = $tpl.mine; minePath = $tpl.minePath; unknown = $tpl.unknown }

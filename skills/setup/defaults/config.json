@@ -127,6 +127,15 @@
   "chief": {
     "briefMaxAgeMinutes": 30,
     "max": 8,
+    "actions": {
+      "test": {},
+      "comment": {},
+      "answer": {},
+      "teams": { "needs": ["chat"], "recipient": "developer" },
+      "writeTests": {},
+      "finishTests": {}
+    },
+    "use": {},
     "rules": [
       { "id": "test-ready", "qa": "IN", "action": "test" },
       { "id": "test-waiting", "qa": "NOT_IN", "action": "teams" },

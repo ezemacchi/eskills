@@ -1,6 +1,6 @@
 ---
 name: chief-of-staff
-description: Answers "what do I do now" for a tester - starts from the brief and proposes, in order and with the reason for each, what to do with the tickets that need them (test what the instance testers use already has, tell a developer or the ticket that a fix has not arrived, answer a question, write or finish tests), then carries out the one the person picks, each step only after they say yes. Invoke with /chief-of-staff.
+description: Answers "what do I do now" - starts from the brief and proposes, in order and with the reason for each, what to do with the tickets that need the person, using the actions of their roles (for a tester - test what the instance testers use already has, tell a developer or the ticket that a fix has not arrived, answer a question, write or finish tests; other roles bring their own actions), then carries out the one the person picks, each step only after they say yes. Invoke with /chief-of-staff.
 disable-model-invocation: true
 ---
 
@@ -34,6 +34,7 @@ The plan proposes; nothing happens until the person picks an item, and every wri
 - `teams`: the developer is in the item (`developer`: name, and `alias` when they are in the people directory). Without an alias, ask the person who it is. Follow the `chat` skill: read the recipient's profile, draft, show the message and who it goes to, and open it with `-Open` after a yes. The person presses Send.
 - `writeTests`: read the story's specification with `/board` (acceptance criteria and the specification files), propose test cases, and give them as text for the person to create in Jira.
 - `finishTests`: list the linked tests still in draft (`/board`), go through them with the person, and say what each one needs. Moving a test out of draft is done in Jira by the person.
+- Any other action comes from the project's pack or the person's roles: the plan's `actions` list (with `-Json`) gives its `how`. Follow it, with the limits below. When an action has `recipient: developer`, the person to write to is in the item (`developer`), as for `teams`.
 
 ## Recording what happened
 
@@ -46,7 +47,7 @@ pwsh -NoProfile -File $kit.chief record -Key <KEY> -Outcome later [-Until 2026-1
 pwsh -NoProfile -File $kit.chief history                                       # what was recorded
 ```
 
-- `-Action` defaults to the action the last plan proposed for that ticket; pass it when the person did something else (`test`, `comment`, `answer`, `teams`, `writeTests`, `finishTests`).
+- `-Action` defaults to the action the last plan proposed for that ticket; pass it when the person did something else (one of the names `pwsh -NoProfile -File $kit.chief check` lists under `actions`).
 - `done` hides the item while the ticket keeps its status and the same rule proposes it, that is, while its situation has not changed (a fix arriving on the instance, for example, changes it); `declined`, for today; `later`, until that date.
 - Record only through the script. Never edit the state file by hand.
 
@@ -55,6 +56,8 @@ pwsh -NoProfile -File $kit.chief history                                       #
 Prefer configuration and the person's own template. The installed kit's files may also be edited (to change how this skill behaves, edit this `SKILL.md` in place): an update keeps the edit, and when the kit changed the same file `/setup` offers to merge them. The table "Where each change goes" in `/setup` says which to use.
 
 - Order and actions: `chief.rules`. Write the list to a JSON file with the Write tool and set it with `/setup` (`set -Key chief.rules -ValueFile <file>`). The script's help (`Get-Help` on it) lists the conditions a rule can use.
+- Which actions the person uses: `chief.use`, set by their roles (`check` says, per rule and per action, whether it is `used`). To stop one for this person only: `/setup` `set -Key chief.use.<action> -Value false -AsJson`.
+- New actions belong in the project's pack (`chief.actions`): a label and a proposal per language, the capabilities they need, and a `how` for the agent. Propose them there rather than in one person's file.
 - How the plan reads: the person's own template (`paths.templates.nextSteps`). `pwsh -NoProfile -File $kit.chief check` prints, under `template`, the team's file (`team`) and where the person's goes (`minePath`). Create or extend the person's file with the Write tool, holding only the texts they change, each starting with the same `<!-- @name -->` line; theirs win, and a name the team's template does not have is ignored and listed in `template.unknown`.
 
 ## Limits

@@ -69,8 +69,8 @@ And:
 
 A pack is a folder with:
 
-- `pack.json`: the kit's name for this project (`kit.name`), the provider of each capability, their values under `providers.<name>`, the repositories to find (`repos`), the planner's rules (`chief.rules`), the test environment (`delivery.qaEnvironment`), and lint patterns that keep the project's values out of the kit;
-- `roles/<name>.json`, one per role in the project: a title and description for `/setup` (`role.title`, `role.description`) and the values everyone in that role shares, usually `board.views` and `user.pullRequests`. A pack without roles can ship view presets instead (`board.viewPresets`), which `/setup` copies into each person's file;
+- `pack.json`: the kit's name for this project (`kit.name`), the provider of each capability, their values under `providers.<name>`, the repositories to find (`repos`), the planner's rules (`chief.rules`) and any actions of its own (`chief.actions`: a label and a proposal per language, the capabilities they need, and a `how` that tells the agent how to carry them out), the test environment (`delivery.qaEnvironment`), and lint patterns that keep the project's values out of the kit;
+- `roles/<name>.json`, one per role in the project: a title and description for `/setup` (`role.title`, `role.description`) and the values everyone in that role shares, usually `board.views`, `user.pullRequests` and which planner actions the role uses (`chief.use`: `{ "<action>": true }`; the planner then applies only the rules whose action the person uses). A pack without roles can ship view presets instead (`board.viewPresets`), which `/setup` copies into each person's file;
 - `people.md` and `notes.md`: the team and what the skills need to know about the project;
 - optionally `templates/` or `guides/` files that replace the kit's, and `providers/<capability>/<name>/` for a service no kit provider covers. Prefer configuring a kit provider: most of what makes a project different (a code pattern, a log line, an address) is a value, and a pack with only values is just configuration.
 

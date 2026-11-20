@@ -1,4 +1,4 @@
-#Requires -Version 7
+﻿#Requires -Version 7
 <#
 .SYNOPSIS
     Checks the kit: its own files, the person's configuration, and that each script answers.
@@ -218,6 +218,9 @@ else {
     foreach ($s in $defaults.kit.scripts.PSObject.Properties) {
         $file = Join-Path $SkillsRoot $s.Value
         if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { Add-Result 'kit' "script $($s.Name)" 'fail' "Missing: $file"; continue }
+        $parseErrors = $null
+        [Management.Automation.Language.Parser]::ParseFile($file, [ref]$null, [ref]$parseErrors) | Out-Null
+        if ($parseErrors.Count) { Add-Result 'kit' "script $($s.Name)" 'fail' "Does not parse, line $($parseErrors[0].Extent.StartLineNumber): $($parseErrors[0].Message)"; continue }
         if ($s.Name -in $standalone) { Add-Result 'kit' "script $($s.Name)" 'ok' 'standalone'; continue }
         $text = (Get-Content -Raw -Encoding utf8 -LiteralPath $file) -replace "`r`n", "`n"
         $m = [regex]::Match($text, '(?s)# kit-config:start.*?# kit-config:end')
@@ -242,6 +245,9 @@ else {
         if (-not $man.script) { Add-Result 'kit' $label 'ok' "no script yet ($(@($man.capabilities) -join ', '))"; continue }
         $file = Join-Path $pm.dir $man.script
         if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { Add-Result 'kit' $label 'fail' "Missing: $file"; continue }
+        $parseErrors = $null
+        [Management.Automation.Language.Parser]::ParseFile($file, [ref]$null, [ref]$parseErrors) | Out-Null
+        if ($parseErrors.Count) { Add-Result 'kit' $label 'fail' "Does not parse, line $($parseErrors[0].Extent.StartLineNumber): $($parseErrors[0].Message)"; continue }
         $text = (Get-Content -Raw -Encoding utf8 -LiteralPath $file) -replace "`r`n", "`n"
         $m = [regex]::Match($text, '(?s)# kit-config:start.*?# kit-config:end')
         if (-not $m.Success) { Add-Result 'kit' $label 'fail' 'No configuration block (# kit-config:start ... # kit-config:end).'; continue }
@@ -357,7 +363,12 @@ else {
         $declared = [regex]::Match($text, '(?m)^# kit-texts[^:]*:(.*)$')
         if ($declared.Success) { foreach ($n in ($declared.Groups[1].Value -split '\s+' | Where-Object { $_ })) { $used.Add($n) } }
         if ($uses.Groups[1].Value -eq 'nextSteps') {
-            foreach ($rule in @($defaults.chief.rules)) { $used.Add("action.$($rule.action)"); $used.Add("label.$($rule.action)"); $used.Add("reason.$($rule.id)") }
+            # An action or a rule that carries its own texts (label and text; reason) needs none in the template.
+            foreach ($rule in @($defaults.chief.rules)) {
+                $actionDef = Get-Prop $defaults "chief.actions.$($rule.action)"
+                if (-not ($actionDef -and (Get-Prop $actionDef 'label') -and (Get-Prop $actionDef 'text'))) { $used.Add("action.$($rule.action)"); $used.Add("label.$($rule.action)") }
+                if (-not (Get-Prop $rule 'reason')) { $used.Add("reason.$($rule.id)") }
+            }
         }
         if ($uses.Groups[1].Value -eq 'brief') {
             foreach ($section in @($defaults.brief.sections)) { if ($section.type -ne 'views') { $used.Add("title.$($section.type)") } }
@@ -373,11 +384,32 @@ else {
         $strangeCaps = @($section.capabilities | Where-Object { $_ -and $_ -notin $knownCapabilities })
         if ($strangeCaps.Count) { Add-Result 'kit' "brief section $($section.type)" 'fail' "Unknown capability: $($strangeCaps -join ', ')." }
     }
+    $actionNames = @(if ($defaults.chief.actions) { $defaults.chief.actions.PSObject.Properties | ForEach-Object { $_.Name } })
     $ruleIds = @{}
     foreach ($rule in @($defaults.chief.rules)) {
         if (-not $rule.id -or -not $rule.action) { Add-Result 'kit' 'chief.rules' 'fail' 'A rule has no id or no action.'; continue }
         if ($ruleIds[$rule.id]) { Add-Result 'kit' "chief rule $($rule.id)" 'fail' 'The id is used twice.' }
         $ruleIds[$rule.id] = $true
+        if ([string]$rule.action -cnotin $actionNames) { Add-Result 'kit' "chief rule $($rule.id)" 'fail' "Its action '$($rule.action)' is not in chief.actions ($($actionNames -join ', '))." }
+        $ownReason = Get-Prop $rule 'reason'
+        $reasonGaps = @(if ($ownReason -and $ownReason -isnot [string]) { $languages | Where-Object { -not (Get-Prop $ownReason $_) } })
+        if ($reasonGaps.Count) { Add-Result 'kit' "chief rule $($rule.id)" 'fail' "Its reason has no text in: $($reasonGaps -join ', ')." }
+    }
+    # Actions: the template's texts, or their own in every language; their own also need a how for the agent.
+    $nextStepsTexts = $teamTexts['nextSteps']
+    foreach ($name in $actionNames) {
+        $def = Get-Prop $defaults "chief.actions.$name"
+        $inTemplate = $nextStepsTexts -and $nextStepsTexts.Contains("action.$name") -and $nextStepsTexts.Contains("label.$name")
+        $strangeNeeds = @(@(Get-Prop $def 'needs') | Where-Object { $_ -and $_ -notin $knownCapabilities })
+        if ($strangeNeeds.Count) { Add-Result 'kit' "chief action $name" 'fail' "needs an unknown capability: $($strangeNeeds -join ', ')."; continue }
+        if ($inTemplate) { continue }
+        $gaps = @(foreach ($field in 'label', 'text') { $map = Get-Prop $def $field; foreach ($lang in $languages) { if (-not ($map -is [string] -and $map) -and -not ($map -and (Get-Prop $map $lang))) { "$field.$lang" } } })
+        $ownText = Get-Prop $def 'text'
+        $periods = @(if ($ownText -and $ownText -isnot [string]) { $ownText.PSObject.Properties | Where-Object { "$($_.Value)".TrimEnd().EndsWith('.') } | ForEach-Object { $_.Name } })
+        if ($gaps.Count) { Add-Result 'kit' "chief action $name" 'fail' "Not in the next-steps template, and its own texts miss: $($gaps -join ', ')." }
+        elseif ($periods.Count) { Add-Result 'kit' "chief action $name" 'warn' "Its text ends with a period in: $($periods -join ', '). It completes the plan's sentence (""I suggest: ..."") and the plan adds the period." }
+        elseif (-not (Get-Prop $def 'how')) { Add-Result 'kit' "chief action $name" 'warn' 'No how: the agent will not know how to carry it out.' }
+        else { Add-Result 'kit' "chief action $name" 'ok' 'own texts and how' }
     }
 
     foreach ($preset in @($defaults.board.viewPresets.PSObject.Properties)) { Test-Views "preset $($preset.Name)" $preset.Value }
@@ -391,6 +423,10 @@ else {
         if ($null -eq $roleCfg) { Add-Result 'kit' $roleArea 'fail' "Not valid JSON: $($rf.FullName)"; continue }
         $strange = @($roleCfg.PSObject.Properties.Name | Where-Object { $_ -in 'kit', 'version', 'providers', 'capabilities' })
         if ($strange.Count) { Add-Result 'kit' $roleArea 'fail' "A role holds what one role shares; $($strange -join ', ') belong in pack.json."; continue }
+        $useMap = Get-Prop $roleCfg 'chief.use'
+        $strangeUse = @(if ($useMap) { $useMap.PSObject.Properties.Name | Where-Object { $_ -cnotin $actionNames } })
+        if ($strangeUse.Count) { Add-Result 'kit' $roleArea 'fail' "chief.use names actions that chief.actions does not have: $($strangeUse -join ', ')."; continue }
+        if ($null -ne (Get-Prop $roleCfg 'chief.rules')) { Add-Result 'kit' $roleArea 'warn' "Sets chief.rules, which replace the pack's rules for whoever has this role. Rules belong in pack.json; a role says which actions it uses (chief.use)." }
         Add-Result 'kit' $roleArea $(if ((Get-Prop $roleCfg 'role.title')) { 'ok' } else { 'warn' }) $(if ((Get-Prop $roleCfg 'role.title')) { [string]$roleCfg.role.title } else { 'No role.title: /setup shows the file name instead.' })
         if ($null -ne (Get-Prop $roleCfg 'board.views')) { Test-Views $roleArea (Get-Prop $roleCfg 'board.views') }
     }
@@ -760,6 +796,15 @@ if ($Fake -and $null -ne $defaults) {
             board = @{ testIssueType = 'Test' }
             brief = @{ followLinks = @('Relates') }
             delivery = @{ qaEnvironment = 'qa' }
+            # An action the pack defines, with its own texts and how, proposed for the tickets no instance has (qa NONE).
+            chief = [ordered]@{
+                actions = @{ ping = [ordered]@{ needs = @('chat'); recipient = 'developer'; label = @{ en = 'ping them'; es = 'avisarle' }; text = @{ en = 'ask {{who}} how it is going'; es = 'preguntale a {{who}} cómo viene' }; how = 'Write to the developer through the chat skill.' } }
+                rules = @(
+                    [ordered]@{ id = 'ping-none'; qa = 'NONE'; action = 'ping'; reason = @{ en = 'No instance has it yet.'; es = 'Ninguna instancia lo tiene todavía.' } },
+                    [ordered]@{ id = 'test-ready'; qa = 'IN'; action = 'test' },
+                    [ordered]@{ id = 'test-waiting'; qa = 'NOT_IN'; action = 'teams' },
+                    [ordered]@{ id = 'no-tests'; tests = 'none'; action = 'writeTests' })
+            }
             providers = [ordered]@{
                 fake        = @{ qualityName = 'Quality' }
                 'git-files' = [ordered]@{
@@ -776,6 +821,7 @@ if ($Fake -and $null -ne $defaults) {
         $roleJson = [ordered]@{
             role = @{ title = 'Tester'; description = 'Tests the tickets assigned to them.' }
             user = @{ pullRequests = $true }
+            chief = @{ use = [ordered]@{ test = $true; teams = $true; writeTests = $true; ping = $true } }
             board = @{ views = @([ordered]@{ id = 'mine'; title = 'My tickets'; query = 'assignee = {me}'; fields = @('summary', 'status', 'updated'); max = 20; qaCheckStatuses = @('*'); linkedTests = $true }) }
         }
         Set-Content -LiteralPath (Join-Path $packDir 'roles\qa.json') -Value ($roleJson | ConvertTo-Json -Depth 6) -Encoding utf8
@@ -783,6 +829,7 @@ if ($Fake -and $null -ne $defaults) {
         $writerJson = [ordered]@{
             role = @{ title = 'Writer'; description = 'Writes test cases.' }
             user = @{ pullRequests = $false }
+            chief = @{ use = @{ finishTests = $true } }
             board = @{ views = @(
                     [ordered]@{ id = 'mine'; title = 'Written by me'; query = 'reporter = {me}'; fields = @('summary', 'status'); max = 5; qaCheckStatuses = @() },
                     [ordered]@{ id = 'drafts'; title = 'My drafts'; query = 'reporter = {me} AND status = Draft'; fields = @('summary', 'status'); max = 1; qaCheckStatuses = @() }) }
@@ -843,6 +890,15 @@ if ($Fake -and $null -ne $defaults) {
         $actions = @{}
         foreach ($item in @($plan.items)) { $actions[[string]$item.key] = [string]$item.action }
         Add-Result 'fake' 'planner' $(if ($actions['FAKE-1'] -eq 'test' -and $actions['FAKE-2'] -eq 'teams') { 'ok' } else { 'fail' }) "FAKE-1 $($actions['FAKE-1']), FAKE-2 $($actions['FAKE-2']); expected test and a message to the developer"
+        $pinged = @($plan.items | Where-Object { $_.action -eq 'ping' })
+        $pingDef = @($plan.actions | Where-Object { $_.name -eq 'ping' }) | Select-Object -First 1
+        $pingOk = $pinged.Count -and $pinged[0].proposal -clike 'ask *' -and $pinged[0].label -eq 'ping them' -and $pinged[0].reason -eq 'No instance has it yet.' -and $pingDef.how
+        Add-Result 'fake' 'planner own action' $(if ($pingOk) { 'ok' } else { 'fail' }) "the pack's action ping: $($pinged.Count) item(s), proposal '$(if ($pinged.Count) { $pinged[0].proposal })', reason '$(if ($pinged.Count) { $pinged[0].reason })', how listed $([bool]$pingDef.how)"
+        [void](Invoke-Kit $setupScript @('set', '-Key', 'chief.use.ping', '-Value', 'false', '-AsJson'))
+        $noPing = ConvertFrom-KitJson (Invoke-Kit $kitScripts.chief @('plan', '-Json')).out
+        [void](Invoke-Kit $setupScript @('unset', '-Key', 'chief.use'))
+        $stillPinged = @($noPing.items | Where-Object { $_.action -eq 'ping' }).Count
+        Add-Result 'fake' 'planner actions used' $(if ($noPing -and -not $stillPinged) { 'ok' } else { 'fail' }) "with chief.use.ping = false, $stillPinged ping item(s); expected none"
 
         $t = Invoke-Kit $kitScripts.delivery @('ticket', '-Key', 'FAKE-2', '-Json')
         $ticket = if ($t.code -eq 0) { ConvertFrom-KitJson $t.out }
