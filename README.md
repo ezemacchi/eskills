@@ -9,9 +9,9 @@ Everything a project may have is a **capability**, and each capability is implem
 | board | tickets: saved views, one ticket and its links, comments, status changes | Jira Cloud |
 | repo | pull requests, their checks, review, merge | Bitbucket Server |
 | ci | builds: status, stages, log | Jenkins |
-| cd | environments: which version each runs, what gets published | a project's own provider, in its pack |
+| cd | environments: which version each runs, what gets published | Jenkins deploy jobs (`jenkins-deploy`, laid out by the pack's patterns) |
 | chat | a message to a colleague, which the person sends | Microsoft Teams |
-| specs | a ticket's specification files | a project's own provider, in its pack |
+| specs | a ticket's specification files | files in a git repository (`git-files`, laid out by the pack's patterns) |
 
 A capability the project does not have is off, and whatever needs it does not appear. What a provider must do is written in [`docs/contracts`](docs/contracts/README.md); adding one is in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
@@ -61,6 +61,17 @@ The guard is a net, not a lock: it does not see an address kept in a variable by
 
 Updating keeps the person's configuration, people and notes, and any kit file they edited in their copy: if the kit changed it too, `/setup` proposes how to merge them.
 
+The installer prints the kit's version, and the kit test shows the installed one on its first line. [`CHANGELOG.md`](CHANGELOG.md) says what each version changed; each version is also a git tag (`v1.0.0`) and a release on GitHub.
+
+## Uninstall
+
+```powershell
+pwsh -NoProfile -File "$env:USERPROFILE\eskills\Uninstall.ps1" -List   # say what it would remove
+pwsh -NoProfile -File "$env:USERPROFILE\eskills\Uninstall.ps1"         # Cursor (add -AgentHost claude for Claude Code)
+```
+
+It removes only what the kit installed: the skill folders carrying the kit's marker (moved to `%LOCALAPPDATA%\eskills\backup\uninstall-<time>\`, since they may hold your edits) and the write guard's entries in the hooks file (copied to `<hooks file>.before-uninstall` first; every other entry stays). Your own skills and other hooks are not touched. Your configuration and state stay in `%LOCALAPPDATA%\eskills`; `-RemoveData` deletes that folder too, with the installer's backups. Then restart the agent. The guard's folder (`hooks\eskills`) is left until then, because the agent keeps running what it loaded and a missing script would block it; delete it after restarting, along with the clone if you like (its `packs\` folder holds your project packs). `-Target` and `-HooksFile` work as in the installer.
+
 ## Where things live
 
 The configuration has four layers, each winning over the one before:
@@ -82,7 +93,7 @@ And:
 
 A pack is a folder with:
 
-- `pack.json`: the pack's name (`pack.name`: letters, digits, `-` and `_`; it names the project's folder and configuration), the repositories that tell the kit it is in this project (`repos`, each with its `name` and `cloneUrl`), the provider of each capability, their values under `providers.<name>`, the planner's rules (`chief.rules`) and any actions of its own (`chief.actions`: a label and a proposal per language, the capabilities they need, and a `how` that tells the agent how to carry them out), the test environment (`delivery.qaEnvironment`), and lint patterns that keep the project's values out of the kit;
+- `pack.json`: the pack's name (`pack.name`: letters, digits, `-` and `_`; it names the project's folder and configuration), the repositories that tell the kit it is in this project (`repos`, each with its `name` and `cloneUrl`), the provider of each capability, their values under `providers.<name>`, the planner's rules (`chief.rules`) and any actions of its own (`chief.actions`: a label and a proposal per language, the capabilities they need, and a `how` that tells the agent how to carry them out), the test environment (`delivery.qaEnvironment`), lint patterns that keep the project's values out of the kit, and, when the pack relies on something added in a given version of the kit, that version (`kit.minVersion`: the installer refuses the pack on an older kit and says to update);
 - `roles/<name>.json`, one per role in the project: a title and description for `/setup` (`role.title`, `role.description`) and the values everyone in that role shares, usually `board.views`, `user.pullRequests` and which planner actions the role uses (`chief.use`: `{ "<action>": true }`; the planner then applies only the rules whose action the person uses). A pack without roles can ship view presets instead (`board.viewPresets`), which `/setup` copies into each person's file;
 - `people.md` and `notes.md`: the team and what the skills need to know about the project;
 - optionally `templates/` or `guides/` files that replace the kit's, and `providers/<capability>/<name>/` for a service no kit provider covers. Prefer configuring a kit provider: most of what makes a project different (a code pattern, a log line, an address) is a value, and a pack with only values is just configuration.
@@ -102,6 +113,7 @@ When a person changed something that would help everyone (a kit file they edited
 - Between skills the contract is the `-Json` output, never the text. Exit codes everywhere: 0 ok, 1 bad input, 2 missing configuration or credentials, 3 the service refused or did not answer.
 - Tests: `Test-Kit.ps1 -Static` (the kit's files), `Test-Kit.ps1 -Fake` (the whole engine against the fake provider, with no account and no network), and `Test-Kit.ps1` with a real configuration (each active capability against its service). To try a configuration without touching yours: set `<KIT_NAME>_CONFIG` to another file and run `Initialize-Config.ps1 init -Pack <folder>`; to try an install, point `<KIT_NAME>_HOME`, `-Target`, `-HooksFile` and `-StateRoot` at a temporary folder (`-Fake` does).
 
+- Releasing a version: say what changed under "Unreleased" in `CHANGELOG.md` as you go. To release, give it the new version and date, set `kit.version` in `skills/setup/defaults/config.json` to the same number (a patch fixes, a minor version adds, a major version breaks something a pack or a tool relied on), run the tests, commit, tag `v<version>` and push the tag, then create the GitHub release with that version's notes.
 - Publishing a copy: `tools/Export-Public.ps1 -Destination <empty folder> -Name <public name> -Pack <each project's pack>` copies the tracked files with no git history, renames the kit, and scans the copy for the packs' `publish.scanPatterns`, e-mail addresses, GUIDs and token shapes. It does not create a repository or push.
 
 ## License

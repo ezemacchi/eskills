@@ -41,6 +41,8 @@
                                variable, repository, default, only, or unchosen), the default, and
                                whether the person has a configuration for each
       default-pack -Name <n>   the pack to use outside every project's repository
+      version                  the installed kit: name, version, the clone's commit, where and when
+                               it was installed from; needs no configuration
       add-pack -From <zip or folder> [-AllowScripts]
                                puts a project pack in the kit's clone (packs\<pack.name>; a previous
                                copy goes to packs\.backup) and installs the kit again with it. Refuses
@@ -97,7 +99,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory, Position = 0)]
-    [ValidateSet('init', 'show', 'get', 'set', 'unset', 'preset', 'roles', 'tools', 'repos', 'env', 'set-env', 'changes', 'merged', 'guides', 'propose', 'provider', 'scripts', 'packs', 'default-pack', 'add-pack')]
+    [ValidateSet('init', 'show', 'get', 'set', 'unset', 'preset', 'roles', 'tools', 'repos', 'env', 'set-env', 'changes', 'merged', 'guides', 'propose', 'provider', 'scripts', 'packs', 'default-pack', 'add-pack', 'version')]
     [string] $Command,
     [string] $Pack,
     [string] $From,
@@ -324,7 +326,7 @@ $SetupRoot = Split-Path -Parent $PSScriptRoot
 $SkillsRoot = Split-Path -Parent $SetupRoot
 $DefaultsFile = Join-Path $SetupRoot 'defaults\config.json'
 # Commands that do not need a chosen project still work from a folder outside every project's repository.
-$ConfigPath = Get-KitConfigPath -Quiet:($Command -in 'packs', 'default-pack', 'add-pack', 'tools', 'changes', 'merged')
+$ConfigPath = Get-KitConfigPath -Quiet:($Command -in 'packs', 'default-pack', 'add-pack', 'tools', 'changes', 'merged', 'version')
 
 function Out-Json($Object) { ConvertTo-Json -InputObject $Object -Depth 20 }
 
@@ -958,6 +960,19 @@ switch ($Command) {
         Out-Json $user.scripts
     }
 
+    'version' {
+        if (-not (Test-Path -LiteralPath $DefaultsFile -PathType Leaf)) { Stop-Kit 2 "The kit's defaults are missing: $DefaultsFile. Reinstall the kit." }
+        $kitValues = (Read-KitJson $DefaultsFile).kit
+        $sourceFile = Join-Path $SetupRoot '.kit-source.json'
+        $install = if (Test-Path -LiteralPath $sourceFile -PathType Leaf) { Read-KitJson $sourceFile } else { $null }
+        Out-Json ([pscustomobject]@{
+                name = [string]$kitValues.name; version = [string]$kitValues.version
+                commit = $(if ($install -and $install.PSObject.Properties['commit']) { $install.commit } else { $null })
+                source = $(if ($install) { [string]$install.source } else { $null })
+                installedAt = $(if ($install -and $install.at -is [datetime]) { $install.at.ToString('o') } elseif ($install) { [string]$install.at } else { $null })
+            })
+    }
+
     'packs' {
         $active = Get-KitPack -Quiet
         $settingsFile = Join-Path (Get-KitRoot) 'settings.json'
@@ -1028,11 +1043,23 @@ switch ($Command) {
         $programs = @(Get-ChildItem -LiteralPath $packRoot -Recurse -File | Where-Object { $_.FullName -notmatch '[\\/]\.git[\\/]' -and $_.Extension -in '.ps1', '.psm1', '.psd1', '.cmd', '.bat', '.exe', '.dll', '.js', '.vbs', '.sh', '.py' } |
                 ForEach-Object { [IO.Path]::GetRelativePath($packRoot, $_.FullName) })
         if ($programs.Count -and -not $AllowScripts) { Stop-AddPack 1 "The pack ships programs that would run on this machine: $($programs -join ', '). Show them to the person; only with their yes, run again with -AllowScripts." }
+        # The install runs from the clone, so the clone's version is the one the pack must accept.
+        $minVersion = if ($values.PSObject.Properties['kit'] -and $values.kit.PSObject.Properties['minVersion']) { [string]$values.kit.minVersion } else { '' }
+        if ($minVersion) {
+            $cloneDefaults = Join-Path ([string]$install.source) 'skills\setup\defaults\config.json'
+            $cloneVersion = if (Test-Path -LiteralPath $cloneDefaults -PathType Leaf) { [string](Read-KitJson $cloneDefaults).kit.version } else { '' }
+            $minParsed = $null; $cloneParsed = $null
+            if (-not [version]::TryParse(($minVersion -split '[-+]')[0], [ref]$minParsed)) { Stop-AddPack 1 "The pack sets kit.minVersion '$minVersion', which is not a version like 1.2.0." }
+            if (-not [version]::TryParse(($cloneVersion -split '[-+]')[0], [ref]$cloneParsed) -or $cloneParsed -lt $minParsed) {
+                Stop-AddPack 1 "The pack needs the kit $minVersion or later, and the kit's clone ($($install.source)) is $(if ($cloneVersion) { $cloneVersion } else { 'of an unknown version' }). Update the clone first (the bootstrap command again, or git pull there), then add the pack."
+            }
+        }
 
         $packsDir = Join-Path ([string]$install.source) 'packs'
         $dest = Join-Path $packsDir $packName
         $previous = $null
-        if ([IO.Path]::GetFullPath($packRoot).TrimEnd('\') -ne [IO.Path]::GetFullPath($dest).TrimEnd('\')) {
+        $copied = [IO.Path]::GetFullPath($packRoot).TrimEnd('\') -ne [IO.Path]::GetFullPath($dest).TrimEnd('\')
+        if ($copied) {
             if (Test-Path -LiteralPath $dest) {
                 $previous = Join-Path $packsDir ".backup\$packName-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
                 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $previous) | Out-Null
@@ -1055,7 +1082,15 @@ switch ($Command) {
         $outside = @(@($install.packs) | Where-Object { $_ -and -not ([string]$_).StartsWith($packsDir, [StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath (Join-Path ([string]$_) 'pack.json') -PathType Leaf) })
         if ($outside.Count) { $installArgs += @('-Pack', ($outside -join ',')) }
         $installed = @(& pwsh @installArgs 2>&1 | ForEach-Object { "$_" })
-        if ($LASTEXITCODE -ne 0) { Stop-Kit 1 "The pack is in $dest, but the install did not finish: $($installed -join ' | ')" }
+        if ($LASTEXITCODE -ne 0) {
+            # Left in packs\, a pack the installer refuses would stop every later install too.
+            if ($copied) {
+                Remove-Item -LiteralPath $dest -Recurse -Force -ErrorAction SilentlyContinue
+                if ($previous) { Move-Item -LiteralPath $previous -Destination $dest }
+                Stop-Kit 1 "The install did not finish, so the pack was taken out of packs\ again$(if ($previous) { ' and the previous copy put back' }): $($installed -join ' | ')"
+            }
+            Stop-Kit 1 "The pack is in $dest, but the install did not finish: $($installed -join ' | ')"
+        }
         Out-Json ([pscustomobject]@{ pack = $packName; folder = $dest; previous = $previous; installer = $installed; restart = $true })
     }
 

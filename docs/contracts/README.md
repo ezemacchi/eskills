@@ -103,6 +103,10 @@ else. What it can rely on:
 - **Finding an installed kit.** Every installed skill folder holds a `.kit` file whose text is the
   kit's name (in the agent's skills folder: `.cursor\skills\<skill>\.kit` or `.claude\skills\<skill>\.kit`);
   the configuration script is `<skills folder>\setup\scripts\Initialize-Config.ps1`.
+- **Which version.** `pwsh -NoProfile -File <the configuration script> version` prints the installed
+  kit's `name`, `version`, the clone's `commit`, where it was installed from (`source`) and when
+  (`installedAt`). It needs no configuration. A tool that relies on something added in a given version
+  compares `version` and tells the person to update the kit when it is older.
 - **The project.** A person may have several project packs installed. The kit uses the one whose
   repositories include the folder a command runs in, else the person's default, else the only one, and
   each project has its own configuration (`%LOCALAPPDATA%\<kit name>\<pack>\config.json`). So run the
@@ -134,3 +138,9 @@ else. What it can rely on:
 A contract changes only by adding: new optional commands, new optional fields. A field is never
 renamed or removed within a version. A breaking change is a new `contract` number, and the engine
 says which providers it can run.
+
+The kit itself has a version (`kit.version` in the defaults: major.minor.patch), and
+[`CHANGELOG.md`](../../CHANGELOG.md) says what each one changed. A patch fixes, a minor version adds,
+and a major version breaks something a pack or a tool relied on. A pack that needs something added in
+a given version says so with `kit.minVersion` in its `pack.json`; the installer and `add-pack` refuse
+it on an older kit.

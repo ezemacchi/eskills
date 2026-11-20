@@ -105,6 +105,14 @@ $defaults = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $source 'set
 # The kit keeps its own name whatever the pack says: one name means one configuration folder and one
 # hook folder, and adding or changing a pack never moves them.
 $kitName = [string]$defaults.kit.name
+$kitVersion = [string]$defaults.kit.version
+$kitCommit = if (Get-Command git -ErrorAction SilentlyContinue) { [string](git -C $PSScriptRoot rev-parse --short HEAD 2>$null) } else { '' }
+if ($LASTEXITCODE) { $kitCommit = '' }
+Write-Host "$kitName $kitVersion$(if ($kitCommit) { " (commit $kitCommit)" })"
+function ConvertTo-KitVersion([string]$Text) {
+    $parsed = $null
+    if ([version]::TryParse(($Text -split '[-+]')[0], [ref]$parsed)) { $parsed } else { $null }
+}
 $hostPlaces = $defaults.kit.agentHosts.$AgentHost
 if (-not $Target) { $Target = Join-Path $env:USERPROFILE ([string]$hostPlaces.skills) }
 if (-not $HooksFile) { $HooksFile = Join-Path $env:USERPROFILE ([string]$hostPlaces.hooksFile) }
@@ -126,6 +134,12 @@ foreach ($folder in $packSources) {
     }
     if ($values.PSObject.Properties['kit'] -and $values.kit.PSObject.Properties['name'] -and [string]$values.kit.name -ne $kitName) {
         Write-Host "The pack $name sets kit.name ('$($values.kit.name)'), which is ignored: the kit keeps its name, $kitName."
+    }
+    $minVersion = if ($values.PSObject.Properties['kit'] -and $values.kit.PSObject.Properties['minVersion']) { [string]$values.kit.minVersion } else { '' }
+    if ($minVersion) {
+        $needed = ConvertTo-KitVersion $minVersion
+        if (-not $needed) { Write-Host "Not installed: the pack $name sets kit.minVersion '$minVersion', which is not a version like 1.2.0."; exit 1 }
+        if ((ConvertTo-KitVersion $kitVersion) -lt $needed) { Write-Host "Not installed: the pack $name needs $kitName $minVersion or later, and this clone is $kitVersion. Update the clone (run the bootstrap command again, or git pull) and install again."; exit 1 }
     }
     $packFolders[$name] = $folder
     $packValues[$name] = $values
@@ -385,6 +399,7 @@ foreach ($skill in $skills) {
 
 # Where this install came from, for /setup's add-pack, which installs again the same way with a new pack.
 $sourceRecord = [ordered]@{
+    version = $kitVersion; commit = $(if ($kitCommit) { $kitCommit } else { $null })
     source = $PSScriptRoot; agentHost = $AgentHost; target = [IO.Path]::GetFullPath($Target); hooksFile = [IO.Path]::GetFullPath($HooksFile)
     stateRoot = $(if ($stateRootGiven) { $StateRoot } else { $null })
     packs = @($packFolders.Values | Where-Object { -not ([string]$_).StartsWith((Join-Path $PSScriptRoot 'packs'), [StringComparison]::OrdinalIgnoreCase) })

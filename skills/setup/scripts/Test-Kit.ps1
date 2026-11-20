@@ -172,6 +172,12 @@ if ($null -eq $defaults) {
 else {
     Add-Result 'kit' 'defaults' 'ok' $defaultsFile
     $engineKitName = [string]$defaults.kit.name
+    $engineVersion = [string]$defaults.kit.version
+    $installRecordFile = Join-Path $SkillsRoot 'setup\.kit-source.json'
+    $installRecord = if (Test-Path -LiteralPath $installRecordFile -PathType Leaf) { ConvertFrom-KitJson (Get-Content -Raw -Encoding utf8 -LiteralPath $installRecordFile) }
+    $commitNote = if ($installRecord -and $installRecord.PSObject.Properties['commit'] -and $installRecord.commit) { " (commit $($installRecord.commit))" } else { '' }
+    if ($engineVersion -match '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') { Add-Result 'kit' 'version' 'ok' "$engineKitName $engineVersion$commitNote" }
+    else { Add-Result 'kit' 'version' 'fail' "kit.version in $defaultsFile is '$engineVersion'; it must look like 1.2.0." }
     # The pack to check: -Pack, else the installed pack in use where this runs (the kit picks it by the
     # current folder's repository, the default, or the only one).
     $packFile = if ($Pack) { Join-Path ([IO.Path]::GetFullPath($Pack)) 'pack.json' }
@@ -195,6 +201,13 @@ else {
             Add-Result 'kit' 'pack' 'ok' "$packFile ($([string]$packCfg.pack.name))"
             if ($packCfg.PSObject.Properties['kit'] -and $packCfg.kit.PSObject.Properties['name'] -and [string]$packCfg.kit.name -ne $engineKitName) {
                 Add-Result 'kit' 'pack kit.name' 'warn' "The pack sets kit.name ('$($packCfg.kit.name)'), which the installer ignores: the kit keeps its name, $engineKitName. Remove it from pack.json."
+            }
+            if ($packCfg.PSObject.Properties['kit'] -and $packCfg.kit.PSObject.Properties['minVersion']) {
+                $minVersion = [string]$packCfg.kit.minVersion
+                $minParsed = $null; $kitParsed = $null
+                if (-not [version]::TryParse(($minVersion -split '[-+]')[0], [ref]$minParsed)) { Add-Result 'kit' 'pack kit.minVersion' 'fail' "kit.minVersion is '$minVersion'; it must look like 1.2.0." }
+                elseif ([version]::TryParse(($engineVersion -split '[-+]')[0], [ref]$kitParsed) -and $kitParsed -lt $minParsed) { Add-Result 'kit' 'pack kit.minVersion' 'fail' "The pack needs $engineKitName $minVersion or later, and this kit is $engineVersion. Update the kit." }
+                else { Add-Result 'kit' 'pack kit.minVersion' 'ok' "needs $minVersion or later; the kit is $engineVersion" }
             }
         }
     }
@@ -975,6 +988,8 @@ if ($Fake -and $null -ne $defaults) {
             New-Item -ItemType Directory -Force -Path $clone2 | Out-Null
             Copy-Item -LiteralPath $SkillsRoot -Destination (Join-Path $clone2 'skills') -Recurse
             Copy-Item -LiteralPath $installer -Destination $clone2
+            $uninstaller = Join-Path (Split-Path -Parent $SkillsRoot) 'Uninstall.ps1'
+            if (Test-Path -LiteralPath $uninstaller -PathType Leaf) { Copy-Item -LiteralPath $uninstaller -Destination $clone2 }
             $prefix = $kitConfigVar -replace '_CONFIG$', ''
             [Environment]::SetEnvironmentVariable($kitConfigVar, $null, 'Process')
             [Environment]::SetEnvironmentVariable("${prefix}_HOME", (Join-Path (Join-Path $ib 'home') $kitName), 'Process')
@@ -986,6 +1001,11 @@ if ($Fake -and $null -ne $defaults) {
             Add-Result 'fake' 'install kit alone' $(if ($i1.code -eq 0 -and (Test-Path -LiteralPath $source2) -and (Get-Content -Raw (Join-Path $skills2 'setup\.kit')).Trim() -eq $kitName) { 'ok' } else { 'fail' }) "exit $($i1.code); install record $(Test-Path -LiteralPath $source2)"
 
             $setup2 = Join-Path $skills2 'setup\scripts\Initialize-Config.ps1'
+            $v1 = Invoke-Kit $setup2 @('version')
+            $ver = if ($v1.code -eq 0) { ConvertFrom-KitJson $v1.out } else { $null }
+            $verOk = $ver -and $ver.version -eq $engineVersion -and $ver.name -eq $kitName -and $ver.source -eq $clone2 -and $ver.installedAt
+            Add-Result 'fake' 'installed version' $(if ($verOk) { 'ok' } else { 'fail' }) "exit $($v1.code); $(if ($ver) { "$($ver.name) $($ver.version) from $($ver.source)" })"
+
             function New-FakePack([string]$Dir, [string]$Name, [string]$RepoName) {
                 New-Item -ItemType Directory -Force -Path (Join-Path $Dir 'roles') | Out-Null
                 $values = [ordered]@{ pack = @{ name = $Name; description = "The $Name project." }; repos = @(@{ path = 'paths.codeRepo'; name = $RepoName; cloneUrl = "fake://code/x/$RepoName.git"; uses = 'tests' }) }
@@ -1023,6 +1043,16 @@ if ($Fake -and $null -ne $defaults) {
             $g1 = Invoke-Kit $setup2 @('add-pack', '-From', $gamma)
             Add-Result 'fake' 'pack with a program' $(if ($g1.code -eq 1 -and $g1.err -match 'AllowScripts' -and -not (Test-Path -LiteralPath (Join-Path $clone2 'packs\gamma'))) { 'ok' } else { 'fail' }) "exit $($g1.code): refused until the person agrees"
 
+            $delta = Join-Path $ib 'delta-pack'
+            New-FakePack $delta 'delta' 'delta-app'
+            $deltaValues = Get-Content -Raw (Join-Path $delta 'pack.json') | ConvertFrom-Json
+            $deltaValues | Add-Member -NotePropertyName kit -NotePropertyValue ([pscustomobject]@{ minVersion = '99.0.0' }) -Force
+            Set-Content -LiteralPath (Join-Path $delta 'pack.json') -Value ($deltaValues | ConvertTo-Json -Depth 5) -Encoding utf8
+            $d1 = Invoke-Kit $setup2 @('add-pack', '-From', $delta)
+            $d2 = Invoke-Kit (Join-Path $clone2 'Install.ps1') ($installArgs + @('-Pack', $delta))
+            $newerOk = $d1.code -eq 1 -and $d1.err -match '99\.0\.0' -and -not (Test-Path -LiteralPath (Join-Path $clone2 'packs\delta')) -and $d2.code -eq 1 -and "$($d2.out)" -match '99\.0\.0'
+            Add-Result 'fake' 'pack needing a newer kit' $(if ($newerOk) { 'ok' } else { 'fail' }) "add-pack exit $($d1.code), not left in packs\: $(-not (Test-Path -LiteralPath (Join-Path $clone2 'packs\delta'))); Install -Pack exit $($d2.code)"
+
             $hookEntries = @((Get-Content -Raw $hooks2 | ConvertFrom-Json).hooks.beforeShellExecution | Where-Object { "$($_.command)" -match [regex]::Escape("\hooks\$kitName\") })
             Add-Result 'fake' 'one guard' $(if ($hookEntries.Count -eq 1) { 'ok' } else { 'fail' }) "$($hookEntries.Count) kit entr$(if ($hookEntries.Count -eq 1) { 'y' } else { 'ies' }) for beforeShellExecution after three installs"
 
@@ -1045,6 +1075,31 @@ if ($Fake -and $null -ne $defaults) {
             $migratedName = if (Test-Path -LiteralPath (Join-Path $ib 'home\fresh\alpha\config.json')) { [string](Get-Content -Raw (Join-Path $ib 'home\fresh\alpha\config.json') | ConvertFrom-Json).user.name } else { '' }
             $migrateOk = $m1.code -eq 0 -and $movedMarker -eq $kitName -and -not $oldEntries -and $migratedName -eq 'Old Me'
             Add-Result 'fake' 'install over an earlier name' $(if ($migrateOk) { 'ok' } else { 'fail' }) "exit $($m1.code); board now says '$movedMarker'; $oldEntries old guard entr$(if ($oldEntries -eq 1) { 'y' } else { 'ies' }); configuration moved: '$migratedName'"
+
+            # Uninstall the first install: only the kit's skills and hook entries go; another program's entry and the person's data stay.
+            $uninstall2 = Join-Path $clone2 'Uninstall.ps1'
+            if (-not (Test-Path -LiteralPath $uninstall2 -PathType Leaf)) { Add-Result 'fake' 'uninstall' 'skip' 'No Uninstall.ps1 next to Install.ps1.' }
+            else {
+                [Environment]::SetEnvironmentVariable("${prefix}_HOME", (Join-Path (Join-Path $ib 'home') $kitName), 'Process')
+                $withOther = Get-Content -Raw $hooks2 | ConvertFrom-Json
+                $withOther.hooks | Add-Member -NotePropertyName sessionStart -NotePropertyValue @([pscustomobject]@{ command = 'pwsh -File "x\my-own-hook.ps1"' }) -Force
+                Set-Content -LiteralPath $hooks2 -Value ($withOther | ConvertTo-Json -Depth 10) -Encoding utf8
+                $uArgs = @('-Target', $skills2, '-HooksFile', $hooks2)
+                $l1 = Invoke-Kit $uninstall2 ($uArgs + '-List')
+                $stillThere = @(Get-ChildItem -LiteralPath $skills2 -Directory | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName '.kit') }).Count
+                Add-Result 'fake' 'uninstall, listing' $(if ($l1.code -eq 0 -and $stillThere -ge 6) { 'ok' } else { 'fail' }) "-List: exit $($l1.code), $stillThere kit skill folders still in place"
+                $u1 = Invoke-Kit $uninstall2 $uArgs
+                $left = @(Get-ChildItem -LiteralPath $skills2 -Directory -ErrorAction SilentlyContinue | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName '.kit') }).Count
+                $after = Get-Content -Raw $hooks2 | ConvertFrom-Json
+                $kitLeft = @(@($after.hooks.PSObject.Properties | ForEach-Object { $_.Value }) | Where-Object { "$($_.command)" -match [regex]::Escape("\hooks\$kitName\") }).Count
+                $otherKept = @($after.hooks.sessionStart | Where-Object { "$($_.command)" -match 'my-own-hook' }).Count
+                $dataKept = Test-Path -LiteralPath (Join-Path $ib "home\$kitName\alpha\config.json")
+                $inBackup = @(Get-ChildItem -LiteralPath (Join-Path $ib "home\$kitName\backup") -Directory -Filter 'uninstall-*' -ErrorAction SilentlyContinue).Count
+                $uOk = $u1.code -eq 0 -and -not $left -and -not $kitLeft -and $otherKept -eq 1 -and $dataKept -and $inBackup -eq 1
+                Add-Result 'fake' 'uninstall' $(if ($uOk) { 'ok' } else { 'fail' }) "exit $($u1.code); kit skills left $left, kit hook entries left $kitLeft, other entry kept $otherKept, configuration kept $dataKept, skills in a backup $inBackup"
+                $u2 = Invoke-Kit $uninstall2 ($uArgs + '-RemoveData')
+                Add-Result 'fake' 'uninstall with data' $(if ($u2.code -eq 0 -and -not (Test-Path -LiteralPath (Join-Path $ib "home\$kitName"))) { 'ok' } else { 'fail' }) "-RemoveData: exit $($u2.code); the person's folder removed $(-not (Test-Path -LiteralPath (Join-Path $ib "home\$kitName")))"
+            }
         }
     }
     catch { Add-Result 'fake' 'sandbox' 'fail' $_.Exception.Message }

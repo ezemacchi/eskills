@@ -2,6 +2,7 @@
   "version": 2,
   "kit": {
     "name": "eskills",
+    "version": "1.0.0",
     "skills": ["setup", "board", "ci", "chat", "brief-me", "chief-of-staff"],
     "skillCapabilities": {
       "board": ["board"],

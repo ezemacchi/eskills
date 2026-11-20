@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Sets up the skills kit (board, ci, chat, brief-me, chief-of-staff) for one person, or changes it later, with the capabilities and providers the project pack chooses. Checks the tools, records the board credentials (the person types the token in his own terminal, never in chat), finds or clones the repositories, looks at that person's board (projects, issue types, statuses, boards) to choose the saved views the other skills show, sets up the brief, and runs the kit test. Use when the person runs /setup or /init, asks to change what the skills show or which repository they read, wants a skill to behave or look different, has just updated the kit (pending merges), or a kit script exits with code 2 or says "Run /setup".
+description: Sets up the skills kit (board, ci, chat, brief-me, chief-of-staff) for one person, or changes it later, with the capabilities and providers the project pack chooses. Checks the tools, records the board credentials (the person types the token in his own terminal, never in chat), finds or clones the repositories, looks at that person's board (projects, issue types, statuses, boards) to choose the saved views the other skills show, sets up the brief, and runs the kit test. Use when the person runs /setup or /init, asks to change what the skills show or which repository they read, wants a skill to behave or look different, has just updated the kit (pending merges), wants to remove the kit, or a kit script exits with code 2 or says "Run /setup".
 ---
 
 # Kit setup
@@ -56,6 +56,7 @@ $kit = (pwsh -NoProfile -File "{{kit.setupScript}}" scripts) -join "`n" | Conver
 | `add-pack -From <zip or folder> [-AllowScripts]` | Puts a project pack in the kit's clone (`packs\<name>`, which git ignores; a previous copy goes to `packs\.backup`) and installs the kit again with it. Refuses a pack that ships programs unless `-AllowScripts`. |
 | `default-pack -Name <name>` | The project to use outside every project's repository. |
 | `scripts` | The kit's scripts for the project in use: what the skills run. |
+| `version` | The installed kit: its version, the clone's commit, where and when it was installed from. Needs no configuration. |
 | `provider -Capability <c>` | The provider a capability uses, whether it is on, its folder, and its notes (read them before using a provider-specific command). |
 | `show [-Effective]` | The person's file, or the merged result. |
 | `get -Key a.b` | One merged value. |
@@ -172,7 +173,7 @@ When one of the person's roles sets `user.pullRequests` (`roles` lists it in the
 
 ### 9. Test
 
-`pwsh -NoProfile -File $kit.test`. Report in plain words what works and what does not, and what the person can do about each warning (connect the VPN, clone a repository). Then tell them what they can ask now: `/board`, `/ci`, `/brief-me`, `/chief-of-staff`, and writing a chat message to a colleague (each only when its capability is on).
+`pwsh -NoProfile -File $kit.test`. Report in plain words which version of the kit is installed (the test's `version` line), what works and what does not, and what the person can do about each warning (connect the VPN, clone a repository). Then tell them what they can ask now: `/board`, `/ci`, `/brief-me`, `/chief-of-staff`, and writing a chat message to a colleague (each only when its capability is on).
 
 ## Updating the kit
 
@@ -192,6 +193,10 @@ Run this step after an update, when the test lists a merge, or when the person a
 |---|---|
 | `changes` | Edited files, pending merges and deleted files of each installed skill. Needs no configuration. |
 | `merged -Skill <skill> -Path <file>` | Records a resolved merge: the file in place is the person's final version, the new kit version becomes its original. |
+
+## Removing the kit
+
+When the person asks to remove the kit: `.kit-source.json`, next to this file, records the clone it was installed from (`source`) and how (`agentHost`, `target`, `hooksFile`). Run `pwsh -NoProfile -File "<source>\Uninstall.ps1" -AgentHost <agentHost> -Target "<target>" -HooksFile "<hooksFile>" -List`, tell the person in plain words what it would remove and what it keeps, and ask whether their configuration and state should go too (`-RemoveData`, which also deletes the installer's backups, including any skills of their own it moved aside). After a yes, run the same command without `-List` (with `-RemoveData` if they chose it), and pass on what it says: restart the agent, then delete the guard's folder and, if they like, the clone.
 
 ## Proposing a change to the kit
 
