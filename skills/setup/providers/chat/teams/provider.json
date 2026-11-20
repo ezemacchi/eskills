@@ -1,0 +1,11 @@
+{
+  "contract": 1,
+  "name": "teams",
+  "displayName": "Teams",
+  "capabilities": ["chat"],
+  "script": "New-TeamsMessageLink.ps1",
+  "commands": ["people", "link"],
+  "config": ["tenantId", "chatUrl"],
+  "secrets": [],
+  "notes": "notes.md"
+}

@@ -1,0 +1,178 @@
+{
+  "version": 2,
+  "kit": {
+    "name": "eskills",
+    "skills": ["setup", "board", "ci", "chat", "brief-me", "chief-of-staff"],
+    "skillCapabilities": {
+      "board": ["board"],
+      "ci": ["ci"],
+      "chat": ["chat"],
+      "brief-me": ["board"],
+      "chief-of-staff": ["board"]
+    },
+    "teamPeople": "people.md",
+    "teamNotes": "notes.md",
+    "templates": {
+      "brief": "templates/brief.{language}.md",
+      "nextSteps": "templates/next-steps.{language}.md"
+    },
+    "guides": {
+      "boardComments": "guides/board-comments.md",
+      "chatMessages": "guides/chat-messages.md"
+    },
+    "templateLanguages": ["es", "en"],
+    "templateFallback": "en",
+    "scripts": {
+      "setup": "setup/scripts/Initialize-Config.ps1",
+      "test": "setup/scripts/Test-Kit.ps1",
+      "secret": "setup/scripts/Set-Secret.ps1",
+      "brief": "brief-me/scripts/Get-Brief.ps1",
+      "chief": "chief-of-staff/scripts/Get-NextSteps.ps1",
+      "delivery": "setup/scripts/Get-Delivery.ps1"
+    },
+    "standalone": ["secret", "test"],
+    "providerRoot": "setup/providers",
+    "agentHosts": {
+      "cursor": { "skills": ".cursor\\skills", "hooksFile": ".cursor\\hooks.json" },
+      "claude": { "skills": ".claude\\skills", "hooksFile": ".claude\\settings.json" }
+    },
+    "hooks": {
+      "source": "setup/hooks",
+      "entries": [
+        { "event": "beforeShellExecution", "script": "Guard-Write.ps1", "timeout": 15, "failClosed": true },
+        { "event": "beforeMCPExecution", "script": "Guard-Write.ps1", "timeout": 15, "failClosed": true }
+      ],
+      "claude": [
+        { "event": "PreToolUse", "matcher": "Bash|PowerShell", "script": "Guard-Write.ps1", "timeout": 15 },
+        { "event": "PreToolUse", "matcher": "mcp__.*", "script": "Guard-Write.ps1", "timeout": 15 }
+      ]
+    },
+    "lint": {
+      "allow": ["setup/defaults/*", "setup/pack/*"],
+      "patterns": [
+        { "name": "URL", "regex": "https?://[A-Za-z0-9-]+\\.[A-Za-z]" },
+        { "name": "absolute Windows path", "regex": "\\b[A-Za-z]:[\\\\/]" },
+        { "name": "GUID", "regex": "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}" },
+        { "name": "Jira custom field id", "regex": "customfield_\\d+" }
+      ]
+    }
+  },
+  "capabilities": {
+    "board": { "provider": "" },
+    "repo": { "provider": "" },
+    "ci": { "provider": "" },
+    "cd": { "provider": "" },
+    "chat": { "provider": "" },
+    "specs": { "provider": "" }
+  },
+  "user": {
+    "name": "",
+    "email": "",
+    "boardAccountId": "",
+    "role": "",
+    "language": "en",
+    "pullRequests": false
+  },
+  "paths": {
+    "codeRepo": "",
+    "specsRepo": "",
+    "myPeople": "{kitHome}\\people.md",
+    "myNotes": "{kitHome}\\notes.md",
+    "stateDir": "{kitHome}\\state",
+    "proposals": "{kitHome}\\proposals",
+    "templates": {
+      "brief": "{kitHome}\\brief-template.md",
+      "nextSteps": "{kitHome}\\next-steps-template.md",
+      "boardComments": "{kitHome}\\board-comments-guide.md",
+      "chatMessages": "{kitHome}\\chat-messages-guide.md"
+    }
+  },
+  "repos": [],
+  "discovery": {
+    "roots": ["{fixedDrives}", "%USERPROFILE%"],
+    "depth": 4,
+    "skip": ["node_modules", "Windows", "Program Files", "Program Files (x86)", "ProgramData", "bin", "obj", "dist", "packages"]
+  },
+  "scripts": {},
+  "board": {
+    "views": [],
+    "viewPresets": {},
+    "testIssueType": "",
+    "commentSignature": "\ud83e\udd16\ud83e\udd16\ud83e\udd16"
+  },
+  "delivery": {
+    "qaEnvironment": "",
+    "tagPattern": "v*"
+  },
+  "guard": {
+    "previewLines": 6
+  },
+  "brief": {
+    "sections": [
+      { "type": "attention" },
+      { "type": "changes" },
+      { "type": "views" },
+      { "type": "instances", "capabilities": ["cd"] },
+      { "type": "pullRequests", "requires": "user.pullRequests", "capabilities": ["repo"] },
+      { "type": "merged", "requires": "user.pullRequests", "capabilities": ["repo"] },
+      { "type": "worktrees", "requires": "user.pullRequests", "capabilities": ["repo"] }
+    ],
+    "qaCheckMax": 10,
+    "qaCacheMinutes": 60,
+    "followLinks": [],
+    "followMax": 3,
+    "mergedDays": 7,
+    "mergedMax": 10
+  },
+  "chief": {
+    "briefMaxAgeMinutes": 30,
+    "max": 8,
+    "rules": [
+      { "id": "test-ready", "qa": "IN", "action": "test" },
+      { "id": "test-waiting", "qa": "NOT_IN", "action": "teams" },
+      { "id": "no-tests", "tests": "none", "action": "writeTests" }
+    ]
+  },
+  "providers": {
+    "jira-cloud": {
+      "site": "",
+      "cloudId": "",
+      "apiBase": "",
+      "emailVar": "JIRA_CLOUD_EMAIL",
+      "tokenVar": "JIRA_CLOUD_TOKEN",
+      "tokenHelpUrl": "https://id.atlassian.com/manage-profile/security/api-tokens",
+      "project": "",
+      "board": null,
+      "fields": {},
+      "writeLog": "jira-writes.jsonl",
+      "guard": {
+        "mcpWriteTools": [
+          "createJiraIssue", "editJiraIssue", "transitionJiraIssue", "addCommentToJiraIssue",
+          "addWorklogToJiraIssue", "createIssueLink",
+          "createConfluencePage", "updateConfluencePage", "createConfluenceFooterComment", "createConfluenceInlineComment"
+        ]
+      }
+    },
+    "jenkins": {
+      "root": "",
+      "multibranch": "",
+      "blueOceanPipeline": "",
+      "jobs": {},
+      "versionParameter": "VERSION",
+      "quickFailureHint": "Failed in under a minute, before any stage ran."
+    },
+    "bitbucket-server": {
+      "base": "",
+      "project": "",
+      "repo": "",
+      "tokenVar": "BITBUCKET_TOKEN",
+      "sonarReportKey": "",
+      "qualityName": ""
+    },
+    "teams": {
+      "tenantId": "",
+      "chatUrl": "https://teams.microsoft.com/l/chat/0/0",
+      "maxLinkLength": 6000
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "contract": 1,
+  "name": "jenkins",
+  "displayName": "Jenkins",
+  "capabilities": ["ci"],
+  "script": "jenkins.ps1",
+  "commands": ["status", "stages", "tail", "find", "ping"],
+  "config": ["root", "multibranch"],
+  "secrets": [],
+  "notes": "reference.md"
+}

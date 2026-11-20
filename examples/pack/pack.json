@@ -1,0 +1,103 @@
+{
+  "pack": {
+    "name": "example",
+    "description": "An invented project: Jira Cloud, Bitbucket Server, Jenkins and Teams, with no cd or specs provider."
+  },
+  "kit": {
+    "name": "example-skills",
+    "lint": {
+      "allow": ["setup/defaults/*", "setup/pack/*"],
+      "patterns": [
+        { "name": "URL", "regex": "https?://[A-Za-z0-9-]+\\.[A-Za-z]" },
+        { "name": "absolute Windows path", "regex": "\\b[A-Za-z]:[\\\\/]" },
+        { "name": "GUID", "regex": "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}" },
+        { "name": "Jira custom field id", "regex": "customfield_\\d+" },
+        { "name": "company e-mail", "regex": "@acme\\.invalid" },
+        { "name": "project key", "regex": "\\bEXA\\b" }
+      ]
+    }
+  },
+  "capabilities": {
+    "board": { "provider": "jira-cloud" },
+    "repo": { "provider": "bitbucket-server" },
+    "ci": { "provider": "jenkins" },
+    "cd": { "provider": "", "enabled": false },
+    "chat": { "provider": "teams" },
+    "specs": { "provider": "" }
+  },
+  "user": {
+    "language": "en"
+  },
+  "repos": [
+    {
+      "path": "paths.codeRepo",
+      "name": "app",
+      "cloneUrl": "https://git.acme.invalid/scm/exa/app.git",
+      "uses": "the pull-request sections"
+    }
+  ],
+  "board": {
+    "testIssueType": "Test",
+    "viewPresets": {
+      "qa": [
+        {
+          "id": "stories-in-review",
+          "title": "Stories assigned to me in review",
+          "query": "project = {project} AND assignee = {me} AND status = 'In Review' ORDER BY updated DESC",
+          "fields": ["summary", "status", "updated"],
+          "max": 20,
+          "qaCheckStatuses": [],
+          "linkedTests": true
+        },
+        {
+          "id": "bugs-i-filed",
+          "title": "Bugs I filed, open",
+          "query": "project = {project} AND issuetype = Bug AND reporter = {me} AND statusCategory != Done ORDER BY updated DESC",
+          "fields": ["summary", "status", "assignee", "updated"],
+          "max": 20,
+          "qaCheckStatuses": []
+        }
+      ],
+      "dev": [
+        {
+          "id": "my-open-issues",
+          "title": "Tickets assigned to me, open",
+          "query": "project = {project} AND assignee = {me} AND statusCategory != Done ORDER BY priority DESC, updated DESC",
+          "fields": ["summary", "status", "priority"],
+          "max": 20,
+          "qaCheckStatuses": []
+        }
+      ]
+    }
+  },
+  "brief": {
+    "followLinks": ["Relates"]
+  },
+  "providers": {
+    "jira-cloud": {
+      "site": "https://example.atlassian.net",
+      "apiBase": "https://example.atlassian.net",
+      "project": "EXA",
+      "board": 12,
+      "fields": {}
+    },
+    "jenkins": {
+      "root": "https://ci.acme.invalid",
+      "multibranch": "https://ci.acme.invalid/job/app",
+      "blueOceanPipeline": "app",
+      "jobs": {
+        "release": "https://ci.acme.invalid/job/app-release"
+      }
+    },
+    "bitbucket-server": {
+      "base": "https://git.acme.invalid",
+      "project": "EXA",
+      "repo": "app",
+      "sonarReportKey": "",
+      "qualityName": ""
+    },
+    "teams": {
+      "tenantId": "00000000-0000-0000-0000-000000000000"
+    }
+  }
+}

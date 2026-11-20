@@ -1,0 +1,19 @@
+{
+  "contract": 1,
+  "name": "example-board",
+  "displayName": "Example",
+  "capabilities": ["board"],
+  "script": "Invoke-Example.ps1",
+  "commands": ["me", "view", "issue", "comments", "comment", "edit-comment", "transition", "discover", "notes"],
+  "config": ["site", "tokenVar"],
+  "secrets": [
+    { "key": "tokenVar", "secret": true }
+  ],
+  "keyPattern": "^[A-Z][A-Z0-9]+-\\d+$",
+  "linkPattern": "{site}/issue/{key}",
+  "guard": {
+    "hosts": ["site"],
+    "writeCommands": ["comment", "edit-comment", "transition"]
+  },
+  "notes": "notes.md"
+}

@@ -1,0 +1,13 @@
+{
+  "contract": 1,
+  "name": "bitbucket-server",
+  "displayName": "Bitbucket",
+  "capabilities": ["repo"],
+  "script": "Invoke-BitbucketServer.ps1",
+  "commands": ["prs", "checks", "quality", "mergeable", "merge-commit"],
+  "config": ["base", "project", "repo", "tokenVar"],
+  "secrets": [
+    { "key": "tokenVar", "secret": true, "when": "user.pullRequests" }
+  ],
+  "names": { "quality": "qualityName" }
+}

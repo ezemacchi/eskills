@@ -1,0 +1,21 @@
+{
+  "contract": 1,
+  "name": "jira-cloud",
+  "displayName": "Jira",
+  "capabilities": ["board"],
+  "script": "Invoke-Jira.ps1",
+  "commands": ["me", "view", "issue", "comments", "comment", "edit-comment", "transition", "discover", "notes", "search", "changelog", "transitions", "sprints", "user", "footprint", "statuses", "boards"],
+  "config": ["site", "apiBase", "emailVar", "tokenVar"],
+  "secrets": [
+    { "key": "emailVar", "secret": false },
+    { "key": "tokenVar", "secret": true }
+  ],
+  "keyPattern": "^[A-Z][A-Z0-9]+-\\d+$",
+  "linkPattern": "{site}/browse/{key}",
+  "guard": {
+    "hosts": ["site", "apiBase"],
+    "writeCommands": ["comment", "edit-comment", "transition"],
+    "mcpWriteTools": "guard.mcpWriteTools",
+    "mcpWritePattern": "(create|edit|update|add|transition|delete)[A-Z]"
+  }
+}
