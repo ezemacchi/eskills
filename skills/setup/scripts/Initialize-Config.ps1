@@ -15,24 +15,26 @@
     %LOCALAPPDATA%\<kit name>.
 
     Four layers, read in order, the later winning: the kit's defaults, the project pack's pack.json
-    (kit.packFile), the pack's file for the person's role (roles\<user.role>.json next to pack.json,
-    when the pack has one), and the user's file. A pack holds a project's values: which provider each
+    (kit.packFile), the pack's files for the person's roles (roles\<name>.json next to pack.json for
+    each name in user.role), and the user's file. A pack holds a project's values: which provider each
     capability uses, their addresses, the team's people and notes, rules. A role file holds what
     everyone in that role shares, such as the saved views; because it is read, not copied, a pack
-    update reaches everyone in the role. Providers are folders with a provider.json, under
-    kit.providerRoot in the kit and providers\ in the pack.
+    update reaches everyone in the role. A person may have several roles, in order: the first role's
+    value wins, except lists whose items all have an id (views, planner rules), which add the later
+    roles' items with a new id. Providers are folders with a provider.json, under kit.providerRoot in
+    the kit and providers\ in the pack.
 
     Commands (all print JSON):
-      init [-Pack <folder>] [-Role <name>]
+      init [-Pack <folder>] [-Role <name>[,<name>...]]
                                creates or refreshes the user's file: points it at these defaults and
                                the pack (-Pack, else the pack installed in setup\pack, else the one
                                already recorded), moves a version 1 file to version 2 (a copy is
-                               kept in backup\ next to it), records -Role as user.role (one of the
-                               pack's roles), records the kit's scripts and the script of each
+                               kept in backup\ next to it), records -Role as user.role (the pack's
+                               roles, in order), records the kit's scripts and the script of each
                                capability that is on, and reports the team's people and notes files
                                next to the user's own
       roles                    the pack's roles: name, title, description, views, the values each
-                               sets, and which one is the person's
+                               sets, and which are the person's (current, and their order)
       provider -Capability <c> the provider a capability uses: its manifest, folder and notes
                                (the provider's own reference, when it has one)
       show [-Effective]        the user's file, or the merged result
@@ -83,7 +85,7 @@ param(
     [ValidateSet('init', 'show', 'get', 'set', 'unset', 'preset', 'roles', 'tools', 'repos', 'env', 'set-env', 'changes', 'merged', 'guides', 'propose', 'provider')]
     [string] $Command,
     [string] $Pack,
-    [string] $Role,
+    [string[]] $Role,
     [string] $Capability,
     [string] $Skill,
     [string] $Path,
@@ -163,16 +165,45 @@ function Read-KitJson([string]$File) {
     try { Get-Content -Raw -Encoding utf8 -LiteralPath $File | ConvertFrom-Json } catch { Stop-Kit 2 "$File is not valid JSON. Run /setup." }
 }
 
+# The person's roles in order: user.role holds one name, several separated by commas, or a list.
+function Get-KitRoles($User) {
+    if (-not ($User.PSObject.Properties['user'] -and $User.user -is [Management.Automation.PSCustomObject] -and $User.user.PSObject.Properties['role'])) { return }
+    foreach ($entry in @($User.user.role)) {
+        foreach ($name in ([string]$entry -split ',')) { $name = $name.Trim(); if ($name -match '^[A-Za-z0-9_-]+$') { $name } }
+    }
+}
+
+# Several roles as one layer: the first role's value wins, except lists whose items all have an id,
+# which add the later roles' items with an id not seen yet.
+function Join-KitRole($First, $Next) {
+    $out = [pscustomobject]@{}
+    foreach ($p in $First.PSObject.Properties) { $out | Add-Member -NotePropertyName $p.Name -NotePropertyValue $p.Value }
+    foreach ($p in $Next.PSObject.Properties) {
+        if (-not $out.PSObject.Properties[$p.Name]) { $out | Add-Member -NotePropertyName $p.Name -NotePropertyValue $p.Value; continue }
+        $mine = $out.($p.Name)
+        if ($mine -is [Management.Automation.PSCustomObject] -and $p.Value -is [Management.Automation.PSCustomObject]) { $out.($p.Name) = Join-KitRole $mine $p.Value }
+        elseif ($mine -is [array] -and $p.Value -is [array] -and -not @(@($mine) + @($p.Value) | Where-Object { $_ -isnot [Management.Automation.PSCustomObject] -or -not $_.PSObject.Properties['id'] }).Count) {
+            $seen = @($mine | ForEach-Object { [string]$_.id })
+            $out.($p.Name) = @($mine) + @($p.Value | Where-Object { [string]$_.id -notin $seen })
+        }
+    }
+    $out
+}
+
 function Get-KitConfig {
     $user = Read-KitJson (Get-KitConfigPath)
     if (-not $user.PSObject.Properties['kit'] -or -not $user.kit.defaultsFile) { Stop-Kit 2 "$(Get-KitConfigPath) does not name kit.defaultsFile. Run /setup." }
     $cfg = Read-KitJson $user.kit.defaultsFile
     if ($user.kit.PSObject.Properties['packFile'] -and $user.kit.packFile) {
         $cfg = Merge-KitObject $cfg (Read-KitJson $user.kit.packFile)
-        # The person's role: the pack's roles\<user.role>.json, read between the pack and the person.
-        $role = if ($user.PSObject.Properties['user'] -and $user.user -is [Management.Automation.PSCustomObject] -and $user.user.PSObject.Properties['role']) { [string]$user.user.role } else { '' }
-        $roleFile = if ($role -match '^[A-Za-z0-9_-]+$') { Join-Path (Split-Path -Parent $user.kit.packFile) "roles\$role.json" } else { '' }
-        if ($roleFile -and (Test-Path -LiteralPath $roleFile -PathType Leaf)) { $cfg = Merge-KitObject $cfg (Read-KitJson $roleFile) }
+        # The person's roles: the pack's roles\<name>.json for each, read between the pack and the person.
+        $roleLayer = $null
+        foreach ($role in @(Get-KitRoles $user)) {
+            $roleFile = Join-Path (Split-Path -Parent $user.kit.packFile) "roles\$role.json"
+            if (-not (Test-Path -LiteralPath $roleFile -PathType Leaf)) { continue }
+            $roleLayer = if ($null -eq $roleLayer) { Read-KitJson $roleFile } else { Join-KitRole $roleLayer (Read-KitJson $roleFile) }
+        }
+        if ($null -ne $roleLayer) { $cfg = Merge-KitObject $cfg $roleLayer }
     }
     $cfg = Merge-KitObject $cfg $user
     if ($cfg.version -ne 2) { Stop-Kit 2 "The configuration is version $($cfg.version); these scripts read version 2. Run /setup." }
@@ -259,6 +290,17 @@ function Assert-PackRole([string]$PackFile, [string]$Name) {
     $known = @(Get-PackRoles $PackFile)
     if (-not $known.Count) { return }
     if (-not @($known | Where-Object { $_.name -eq $Name }).Count) { Stop-Kit 1 "No role '$Name' in the pack. Its roles: $(@($known | ForEach-Object { $_.name }) -join ', ')." }
+}
+
+# Role names from -Role or a set value: one name, several separated by commas, or a list.
+function Split-RoleNames($Value) {
+    @(@($Value) | ForEach-Object { [string]$_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -Unique)
+}
+
+# How user.role is stored: one name as text, several as a list in their order.
+function ConvertTo-RoleValue([string[]]$Names) {
+    if ($Names.Count -eq 1) { return $Names[0] }
+    , [string[]]$Names
 }
 
 function Set-Dotted($Object, [string]$Dotted, $NewValue) {
@@ -667,8 +709,9 @@ switch ($Command) {
         if ($packFile) { Set-Dotted $user 'kit.packFile' $packFile } else { [void](Remove-Dotted $user 'kit.packFile') }
         if ($Role) {
             if (-not @(Get-PackRoles $packFile).Count) { Stop-Kit 1 "-Role needs a pack with roles (roles\<name>.json next to pack.json)." }
-            Assert-PackRole $packFile $Role
-            Set-Dotted $user 'user.role' $Role
+            $roleNames = Split-RoleNames $Role
+            foreach ($r in $roleNames) { Assert-PackRole $packFile $r }
+            Set-Dotted $user 'user.role' (ConvertTo-RoleValue $roleNames)
         }
 
         $scripts = [ordered]@{}
@@ -722,11 +765,12 @@ switch ($Command) {
         $files += foreach ($g in @(Get-KitGuides $cfg)) {
             [pscustomobject]@{ file = "$($g.name) guide"; team = $g.team; teamOk = $g.teamOk; mine = $g.mine; mineExists = $g.mineExists }
         }
-        $roleName = [string](Get-KitValue $cfg 'user.role')
-        $roleFile = @(Get-PackRoles $packFile | Where-Object { $_.name -eq $roleName } | ForEach-Object { $_.file }) | Select-Object -First 1
+        $myRoles = @(Get-KitRoles $cfg)
+        $packRoles = @(Get-PackRoles $packFile)
+        $roleFiles = @(foreach ($r in $myRoles) { $packRoles | Where-Object { $_.name -eq $r } | ForEach-Object { $_.file } })
         Out-Json ([pscustomobject]@{
                 config = $ConfigPath; created = $created; migratedFrom = $migratedFrom; defaults = $DefaultsFile; pack = $packFile
-                role = $roleName; roleFile = $roleFile
+                role = ($myRoles -join ','); roles = @($myRoles); roleFiles = @($roleFiles)
                 skills = $skills; capabilities = @($capabilities); scripts = [pscustomobject]$scripts; files = @($files)
             })
     }
@@ -771,7 +815,12 @@ switch ($Command) {
         }
         elseif ($PSBoundParameters.ContainsKey('Value')) { $new = $Value }
         else { Stop-Kit 1 'set needs -Value or -ValueFile.' }
-        if ($Key -eq 'user.role' -and $new) { Assert-PackRole ([string](Get-KitValue (Get-KitConfig) 'kit.packFile')) ([string]$new) }
+        if ($Key -eq 'user.role' -and $new) {
+            $roleNames = Split-RoleNames $new
+            $rolePack = [string](Get-KitValue (Get-KitConfig) 'kit.packFile')
+            foreach ($r in $roleNames) { Assert-PackRole $rolePack $r }
+            if (@(Get-PackRoles $rolePack).Count) { $new = ConvertTo-RoleValue $roleNames }
+        }
         $user = Read-UserConfig
         if ($null -eq $user) { Stop-Kit 2 "No configuration at $ConfigPath. Run init first." }
         Set-Dotted $user $Key $new
@@ -809,8 +858,11 @@ switch ($Command) {
 
     'roles' {
         $cfg = Get-KitConfig
-        $mine = [string](Get-KitValue $cfg 'user.role')
-        Out-Json @(Get-PackRoles ([string]$cfg.kit.packFile) | ForEach-Object { $_ | Add-Member -NotePropertyName current -NotePropertyValue ($_.name -eq $mine) -PassThru })
+        $mine = @(Get-KitRoles $cfg)
+        Out-Json @(Get-PackRoles ([string]$cfg.kit.packFile) | ForEach-Object {
+                $_ | Add-Member -NotePropertyName current -NotePropertyValue ($_.name -in $mine) -PassThru |
+                    Add-Member -NotePropertyName order -NotePropertyValue ([array]::IndexOf([string[]]$mine, [string]$_.name) + 1) -PassThru
+            })
     }
 
     'tools' {

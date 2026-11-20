@@ -38,7 +38,7 @@ pwsh -NoProfile -File .\Install.ps1 -Pack <the project's pack folder> -Role <rol
 pwsh -NoProfile -File .\Install.ps1 -AgentHost claude -Pack <the project's pack folder> -Role <role> # Claude Code
 ```
 
-`-Role` is optional: one of the pack's roles (`roles\<name>.json`). With it, the person starts with their role's views and settings, and `/setup` only asks for their credentials and confirms the rest. Without it, `/setup` looks at their work on the board and proposes a role.
+`-Role` is optional: one or more of the pack's roles (`roles\<name>.json`), separated by commas, the main one first (`-Role dev,qa`). With it, the person starts with their roles' views and settings, and `/setup` only asks for their credentials and confirms the rest. Without it, `/setup` looks at their work on the board and proposes roles.
 
 It copies the skills to the agent's skills folder (`.cursor\skills` or `.claude\skills`), with the pack inside the setup skill (`setup\pack`). A skill whose capability the pack turns off is not installed, and a kit skill a new version no longer ships is moved to a backup. A folder with the same name that is not the kit's stops the install; `-Force` moves it to a backup first. Updating a kit installed with a pack needs `-Pack` again. Then, in the agent, start a new chat or session and run `/setup`.
 
@@ -54,7 +54,7 @@ The configuration has four layers, each winning over the one before:
 
 - **Kit values**: `skills/setup/defaults/config.json`. What every project shares (providers start unchosen). Replaced on update.
 - **Project values**: the pack's `pack.json` (installed in `setup\pack`). What everyone in the project shares: which provider each capability uses, their addresses, ids and patterns (under `providers.<name>`), the planner's rules. The pack also brings the team's people and notes (`people.md`, `notes.md`).
-- **Role values**: the pack's `roles\<user.role>.json`. What everyone in one role shares: the saved views, whether they work with pull requests. Read, not copied, so a pack update reaches everyone in the role.
+- **Role values**: the pack's `roles\<name>.json` for each of the person's roles (`user.role`). What everyone in one role shares: the saved views, whether they work with pull requests. Read, not copied, so a pack update reaches everyone in the role. With several roles, the person gets the views of all of them (the first role's when two share an id) and every other value from the first role that sets it.
 - **The person's values**: `%LOCALAPPDATA%\<kit name>\config.json`. Only what differs for them: usually their identity and where their clones are.
 
 And:

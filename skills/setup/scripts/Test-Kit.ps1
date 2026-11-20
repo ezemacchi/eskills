@@ -507,17 +507,18 @@ if (-not $Static -and -not $Fake -and $null -ne $defaults) {
             else { Add-Result 'config' $k 'fail' 'Empty. /setup step 3 records it from the board token.' }
         }
         foreach ($k in 'user.role', 'user.language') {
-            if (Get-Prop $cfg $k) { Add-Result 'config' $k 'ok' ([string](Get-Prop $cfg $k)) } else { Add-Result 'config' $k 'warn' 'Empty. /setup asks for it.' }
+            if (Get-Prop $cfg $k) { Add-Result 'config' $k 'ok' (@(Get-Prop $cfg $k) -join ', ') } else { Add-Result 'config' $k 'warn' 'Empty. /setup asks for it.' }
         }
         $packRoles = @(ConvertFrom-KitJson (Invoke-Kit $setup @('roles')).out | ForEach-Object { $_ } | Where-Object { $_ })
-        $myRole = [string](Get-Prop $cfg 'user.role')
-        if ($packRoles.Count -and $myRole -and -not @($packRoles | Where-Object { $_.name -eq $myRole }).Count) {
-            Add-Result 'config' 'role' 'fail' "user.role '$myRole' is not one of the pack's roles ($(@($packRoles | ForEach-Object { $_.name }) -join ', ')), so no role's views apply. /setup step 6."
+        $myRoles = @(@(Get-Prop $cfg 'user.role') | ForEach-Object { [string]$_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        $strangeRoles = @($myRoles | Where-Object { $_ -notin @($packRoles | ForEach-Object { $_.name }) })
+        if ($packRoles.Count -and $strangeRoles.Count) {
+            Add-Result 'config' 'role' 'fail' "user.role names $(($strangeRoles | ForEach-Object { "'$_'" }) -join ', '), which the pack does not define ($(@($packRoles | ForEach-Object { $_.name }) -join ', ')), so no views come from it. /setup step 6."
         }
-        elseif ($packRoles.Count -and $myRole) {
+        elseif ($packRoles.Count -and $myRoles.Count) {
             $ownFile = ConvertFrom-KitJson (Invoke-Kit $setup @('show')).out
-            if ($null -ne (Get-Prop $ownFile 'board.views')) { Add-Result 'config' 'role' 'warn' "Your own board.views replace the views of the role $myRole, so the team's updates to them do not reach you. /setup step 6 offers to drop yours." }
-            else { Add-Result 'config' 'role' 'ok' "The views come from the pack's role $myRole." }
+            if ($null -ne (Get-Prop $ownFile 'board.views')) { Add-Result 'config' 'role' 'warn' "Your own board.views replace the views of your roles ($($myRoles -join ', ')), so the team's updates to them do not reach you. /setup step 6 offers to drop yours." }
+            else { Add-Result 'config' 'role' 'ok' "The views come from the pack's role$(if ($myRoles.Count -gt 1) { 's' }) $($myRoles -join ', ')." }
         }
         Test-Views 'config' (Get-Prop $cfg 'board.views')
 
@@ -778,6 +779,15 @@ if ($Fake -and $null -ne $defaults) {
             board = @{ views = @([ordered]@{ id = 'mine'; title = 'My tickets'; query = 'assignee = {me}'; fields = @('summary', 'status', 'updated'); max = 20; qaCheckStatuses = @('*'); linkedTests = $true }) }
         }
         Set-Content -LiteralPath (Join-Path $packDir 'roles\qa.json') -Value ($roleJson | ConvertTo-Json -Depth 6) -Encoding utf8
+        # A second role that clashes with the first on a view id and on a single value: the first role must win both.
+        $writerJson = [ordered]@{
+            role = @{ title = 'Writer'; description = 'Writes test cases.' }
+            user = @{ pullRequests = $false }
+            board = @{ views = @(
+                    [ordered]@{ id = 'mine'; title = 'Written by me'; query = 'reporter = {me}'; fields = @('summary', 'status'); max = 5; qaCheckStatuses = @() },
+                    [ordered]@{ id = 'drafts'; title = 'My drafts'; query = 'reporter = {me} AND status = Draft'; fields = @('summary', 'status'); max = 1; qaCheckStatuses = @() }) }
+        }
+        Set-Content -LiteralPath (Join-Path $packDir 'roles\writer.json') -Value ($writerJson | ConvertTo-Json -Depth 6) -Encoding utf8
         $userConfig = [ordered]@{
             version = 2
             user = [ordered]@{ name = 'Fake Person'; email = 'fake.person@example.invalid'; boardAccountId = 'fake-1'; language = 'en' }
@@ -794,14 +804,15 @@ if ($Fake -and $null -ne $defaults) {
         $setupScript = Join-Path $SkillsRoot $defaults.kit.scripts.setup
         $badRole = Invoke-Kit $setupScript @('init', '-Pack', $packDir, '-Role', 'nobody')
         Add-Result 'fake' 'role unknown' $(if ($badRole.code -eq 1 -and $badRole.err -match 'qa') { 'ok' } else { 'fail' }) "init -Role nobody: exit $($badRole.code), $("$($badRole.err)".Trim())"
-        $in = Invoke-Kit $setupScript @('init', '-Pack', $packDir, '-Role', 'qa')
+        $in = Invoke-Kit $setupScript @('init', '-Pack', $packDir, '-Role', 'qa,writer')
         $inData = if ($in.code -eq 0) { ConvertFrom-KitJson $in.out }
         $off = @($inData.capabilities | Where-Object { $_.capability -ne 'specs' -and -not ($_.on -and $_.script) })
         if ($null -eq $inData) { throw "init failed: $($in.err)" }
         Add-Result 'fake' 'init' $(if ($off.Count) { 'fail' } else { 'ok' }) $(if ($off.Count) { "Not on with a script: $(@($off | ForEach-Object { $_.capability }) -join ', ')" } else { 'board, repo, ci, cd and chat on the fake provider' })
-        $views = @(ConvertFrom-KitJson (Invoke-Kit $setupScript @('get', '-Key', 'board.views')).out)
-        $roleOk = $inData.role -eq 'qa' -and $views.Count -eq 1 -and $views[0].id -eq 'mine'
-        Add-Result 'fake' 'role' $(if ($roleOk) { 'ok' } else { 'fail' }) "init -Role qa recorded '$($inData.role)'; the views read are $(@($views | ForEach-Object { $_.id }) -join ', '), from roles\qa.json (the person's file has none)"
+        $views = @(ConvertFrom-KitJson (Invoke-Kit $setupScript @('get', '-Key', 'board.views')).out | ForEach-Object { $_ })
+        $pullRequests = ConvertFrom-KitJson (Invoke-Kit $setupScript @('get', '-Key', 'user.pullRequests')).out
+        $roleOk = $inData.role -eq 'qa,writer' -and ($views.id -join ',') -eq 'mine,drafts' -and $views[0].title -eq 'My tickets' -and $pullRequests -eq $true
+        Add-Result 'fake' 'roles' $(if ($roleOk) { 'ok' } else { 'fail' }) "init -Role qa,writer recorded '$($inData.role)'; views $(@($views | ForEach-Object { "$($_.id) ($($_.title))" }) -join ', '); pull requests $pullRequests. Expected mine (My tickets, the first role's), drafts (the second's), and true (the first role's)"
         $kitScripts = (ConvertFrom-KitJson (Get-Content -Raw -Encoding utf8 -LiteralPath $fakeConfig)).scripts
 
         $b = Invoke-Kit $kitScripts.brief @('-Json')

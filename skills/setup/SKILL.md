@@ -28,7 +28,7 @@ Four layers, each on top of the one before; a value in a later layer wins, and a
 
 - **Kit defaults**: `defaults/config.json` in this skill's folder. Values every project shares. Replaced on every kit update.
 - **The project pack**: `pack/pack.json` in this skill's folder, installed from the project's pack with `Install.ps1 -Pack`. What everyone in the project shares: which provider each capability uses and its addresses and patterns, the plan's rules. The pack also ships the team's people directory and project notes (`people.md`, `notes.md`), and may ship templates, guides and, for a service no kit provider covers, its own providers; each replaces the kit's file of the same name.
-- **The role**: `pack/roles/<user.role>.json`, when the pack has roles. What everyone in that role shares: the saved views, whether they work with pull requests. `Install.ps1 -Role <name>` or step 6 sets `user.role`.
+- **The roles**: `pack/roles/<name>.json` for each name in `user.role`, when the pack has roles. What everyone in that role shares: the saved views, whether they work with pull requests. A person may have several roles, the main one first: they get the views of all of them (the first role's when two share an id), and every other value from the first role that sets it. `Install.ps1 -Role <name>[,<name>]` or step 6 sets `user.role`.
 - **The person's own file**: `%LOCALAPPDATA%\{{kit.name}}\config.json` (or the path in the variable `{{kit.configVar}}`). Holds only what differs for that person: usually just their identity and where their clones are.
 
 More:
@@ -50,8 +50,8 @@ $kit = (Get-Content -Raw (@($env:{{kit.configVar}}, "$env:LOCALAPPDATA\{{kit.nam
 
 | Command | Does |
 |---|---|
-| `init [-Pack <folder>] [-Role <name>]` | Creates or refreshes the person's file: points it at these defaults and the pack, moves a version 1 file to version 2 (keeping a copy in `backup\` next to it), records `-Role` as `user.role`, records the scripts' paths and each capability's, reports the role and the team and personal files. Safe to re-run. |
-| `roles` | The pack's roles: name, title, description, views, the values each sets, and which is the person's (`current`). Empty for a pack without roles. |
+| `init [-Pack <folder>] [-Role <name>[,<name>]]` | Creates or refreshes the person's file: points it at these defaults and the pack, moves a version 1 file to version 2 (keeping a copy in `backup\` next to it), records `-Role` as `user.role`, records the scripts' paths and each capability's, reports the roles and the team and personal files. Safe to re-run. |
+| `roles` | The pack's roles: name, title, description, views, the values each sets, and which are the person's (`current`, and `order`: 1 for the main one). Empty for a pack without roles. |
 | `provider -Capability <c>` | The provider a capability uses, whether it is on, its folder, and its notes (read them before using a provider-specific command). |
 | `show [-Effective]` | The person's file, or the merged result. |
 | `get -Key a.b` | One merged value. |
@@ -117,8 +117,8 @@ The views decide what the other skills show, so they must match the person's rea
 
 **When the pack has roles:**
 
-1. If the person already has one (`current: true`, set by `Install.ps1 -Role` or an earlier run), run every view (`view -Id <id>`) and show the counts in one short list. Say which role it is (its title), that the views come from the team's pack, and ask only whether they fit. Do not run `discover` when they do.
-2. If the person has none, or says it does not fit: look at their real work (`discover`, and `footprint` for detail, as described below), summarize it in plain words, propose the role whose description matches, then `set -Key user.role -Value <name>` and run the views as in 1.
+1. If the person already has roles (`current: true`, set by `Install.ps1 -Role` or an earlier run), run every view (`view -Id <id>`) and show the counts in one short list. Say which roles they are (their titles), that the views come from the team's pack, and ask only whether they fit. Do not run `discover` when they do.
+2. If the person has none, or says they do not fit: look at their real work (`discover`, and `footprint` for detail, as described below), summarize it in plain words, and propose the roles whose descriptions match. Someone who does two jobs (writes test cases and also runs them) gets both, the main one first: `set -Key user.role -Value "<main>,<other>"`. Then run the views as in 1.
 3. If the person's own file has `board.views` (an earlier `preset` copied them), those hide the role's. Show both lists; when they are the same, offer `unset -Key board.views` so the role's views apply and follow updates.
 4. A view only this person wants: write the full list with the Write tool and `set -Key board.views -ValueFile <file>`. It replaces the role's list for them, and updates to the role's views stop reaching them; say so. A change the whole role would want belongs in the pack: propose it ("Proposing a change to the kit").
 
@@ -147,7 +147,7 @@ The views decide what the other skills show, so they must match the person's rea
 
 ### 7. Pull requests
 
-When the person's role sets `user.pullRequests` (`roles` lists it in the role's `sets`), do not ask: say what the role decided, and change it only if the person says otherwise. Otherwise ask whether they open or review pull requests. `set -Key user.pullRequests -Value true|false -AsJson`. Only when true, and when the repo capability is on, the code host's token is needed (`env` lists it as needed; for Bitbucket Server, `providers.bitbucket-server.tokenVar`): the person creates it in Bitbucket (profile, HTTP access tokens, read access) and saves it with the secret script as in step 3.
+When one of the person's roles sets `user.pullRequests` (`roles` lists it in the role's `sets`; with several, the first role that sets it decides), do not ask: say what the role decided, and change it only if the person says otherwise. Otherwise ask whether they open or review pull requests. `set -Key user.pullRequests -Value true|false -AsJson`. Only when true, and when the repo capability is on, the code host's token is needed (`env` lists it as needed; for Bitbucket Server, `providers.bitbucket-server.tokenVar`): the person creates it in Bitbucket (profile, HTTP access tokens, read access) and saves it with the secret script as in step 3.
 
 ### 8. Brief
 

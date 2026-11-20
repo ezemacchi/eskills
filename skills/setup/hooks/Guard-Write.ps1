@@ -119,7 +119,8 @@ $fallbackRule = [pscustomobject]@{
 }
 
 # The rules of every provider that is on, and how many lines of a text to show. The person's value
-# wins over their role's, then the project pack's, then the kit's, as in the kit scripts. $null when unreadable.
+# wins over their roles' (the first role first), then the project pack's, then the kit's, as in the kit
+# scripts. $null when unreadable.
 function Read-GuardConfig {
     $kitName = Get-GuardKitName
     $override = [Environment]::GetEnvironmentVariable((($kitName.ToUpperInvariant() -replace '[^A-Z0-9]', '_') + '_CONFIG'), 'Process')
@@ -128,9 +129,11 @@ function Read-GuardConfig {
         $userCfg = Get-Content -Raw -Encoding utf8 -LiteralPath $userFile | ConvertFrom-Json
         $layers = @($userCfg)
         if ($userCfg.kit.packFile) {
-            $role = [string]$userCfg.user.role
-            $roleFile = if ($role -match '^[A-Za-z0-9_-]+$') { Join-Path (Split-Path -Parent ([string]$userCfg.kit.packFile)) "roles\$role.json" } else { '' }
-            if ($roleFile -and (Test-Path -LiteralPath $roleFile -PathType Leaf)) { $layers += Get-Content -Raw -Encoding utf8 -LiteralPath $roleFile | ConvertFrom-Json }
+            # Each of the person's roles, in order (one name, several separated by commas, or a list).
+            foreach ($role in @(@($userCfg.user.role) | ForEach-Object { [string]$_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^[A-Za-z0-9_-]+$' })) {
+                $roleFile = Join-Path (Split-Path -Parent ([string]$userCfg.kit.packFile)) "roles\$role.json"
+                if (Test-Path -LiteralPath $roleFile -PathType Leaf) { $layers += Get-Content -Raw -Encoding utf8 -LiteralPath $roleFile | ConvertFrom-Json }
+            }
             $layers += Get-Content -Raw -Encoding utf8 -LiteralPath ([string]$userCfg.kit.packFile) | ConvertFrom-Json
         }
         $layers += Get-Content -Raw -Encoding utf8 -LiteralPath ([string]$userCfg.kit.defaultsFile) | ConvertFrom-Json

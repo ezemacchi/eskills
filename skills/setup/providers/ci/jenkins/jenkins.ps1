@@ -94,16 +94,45 @@ function Read-KitJson([string]$File) {
     try { Get-Content -Raw -Encoding utf8 -LiteralPath $File | ConvertFrom-Json } catch { Stop-Kit 2 "$File is not valid JSON. Run /setup." }
 }
 
+# The person's roles in order: user.role holds one name, several separated by commas, or a list.
+function Get-KitRoles($User) {
+    if (-not ($User.PSObject.Properties['user'] -and $User.user -is [Management.Automation.PSCustomObject] -and $User.user.PSObject.Properties['role'])) { return }
+    foreach ($entry in @($User.user.role)) {
+        foreach ($name in ([string]$entry -split ',')) { $name = $name.Trim(); if ($name -match '^[A-Za-z0-9_-]+$') { $name } }
+    }
+}
+
+# Several roles as one layer: the first role's value wins, except lists whose items all have an id,
+# which add the later roles' items with an id not seen yet.
+function Join-KitRole($First, $Next) {
+    $out = [pscustomobject]@{}
+    foreach ($p in $First.PSObject.Properties) { $out | Add-Member -NotePropertyName $p.Name -NotePropertyValue $p.Value }
+    foreach ($p in $Next.PSObject.Properties) {
+        if (-not $out.PSObject.Properties[$p.Name]) { $out | Add-Member -NotePropertyName $p.Name -NotePropertyValue $p.Value; continue }
+        $mine = $out.($p.Name)
+        if ($mine -is [Management.Automation.PSCustomObject] -and $p.Value -is [Management.Automation.PSCustomObject]) { $out.($p.Name) = Join-KitRole $mine $p.Value }
+        elseif ($mine -is [array] -and $p.Value -is [array] -and -not @(@($mine) + @($p.Value) | Where-Object { $_ -isnot [Management.Automation.PSCustomObject] -or -not $_.PSObject.Properties['id'] }).Count) {
+            $seen = @($mine | ForEach-Object { [string]$_.id })
+            $out.($p.Name) = @($mine) + @($p.Value | Where-Object { [string]$_.id -notin $seen })
+        }
+    }
+    $out
+}
+
 function Get-KitConfig {
     $user = Read-KitJson (Get-KitConfigPath)
     if (-not $user.PSObject.Properties['kit'] -or -not $user.kit.defaultsFile) { Stop-Kit 2 "$(Get-KitConfigPath) does not name kit.defaultsFile. Run /setup." }
     $cfg = Read-KitJson $user.kit.defaultsFile
     if ($user.kit.PSObject.Properties['packFile'] -and $user.kit.packFile) {
         $cfg = Merge-KitObject $cfg (Read-KitJson $user.kit.packFile)
-        # The person's role: the pack's roles\<user.role>.json, read between the pack and the person.
-        $role = if ($user.PSObject.Properties['user'] -and $user.user -is [Management.Automation.PSCustomObject] -and $user.user.PSObject.Properties['role']) { [string]$user.user.role } else { '' }
-        $roleFile = if ($role -match '^[A-Za-z0-9_-]+$') { Join-Path (Split-Path -Parent $user.kit.packFile) "roles\$role.json" } else { '' }
-        if ($roleFile -and (Test-Path -LiteralPath $roleFile -PathType Leaf)) { $cfg = Merge-KitObject $cfg (Read-KitJson $roleFile) }
+        # The person's roles: the pack's roles\<name>.json for each, read between the pack and the person.
+        $roleLayer = $null
+        foreach ($role in @(Get-KitRoles $user)) {
+            $roleFile = Join-Path (Split-Path -Parent $user.kit.packFile) "roles\$role.json"
+            if (-not (Test-Path -LiteralPath $roleFile -PathType Leaf)) { continue }
+            $roleLayer = if ($null -eq $roleLayer) { Read-KitJson $roleFile } else { Join-KitRole $roleLayer (Read-KitJson $roleFile) }
+        }
+        if ($null -ne $roleLayer) { $cfg = Merge-KitObject $cfg $roleLayer }
     }
     $cfg = Merge-KitObject $cfg $user
     if ($cfg.version -ne 2) { Stop-Kit 2 "The configuration is version $($cfg.version); these scripts read version 2. Run /setup." }
