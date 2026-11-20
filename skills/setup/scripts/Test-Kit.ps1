@@ -141,7 +141,7 @@ function Get-Placeholders([string]$Text) {
 }
 
 function Test-Views([string]$Area, $Views, [switch]$AllowEmpty) {
-    $list = @($Views)
+    $list = @($Views | Where-Object { $null -ne $_ })
     if (-not $list.Count) {
         if ($AllowEmpty) { return }
         Add-Result $Area 'views' 'warn' 'No saved views; the other skills have nothing to show. /setup step 6 chooses them.'
