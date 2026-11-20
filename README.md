@@ -33,13 +33,21 @@ A capability the project does not have is off, and whatever needs it does not ap
 
 ## Install or update
 
+In PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/ezemacchi/eskills/main/bootstrap.ps1 | iex
+```
+
+[`bootstrap.ps1`](bootstrap.ps1) clones this repository into `%USERPROFILE%\eskills` (or updates it) and runs its installer; it needs git and PowerShell 7 and no administrator rights. Read it first if you like. For Claude Code, set `$env:ESKILLS_AGENT = 'claude'` before running it; `$env:ESKILLS_DIR` chooses another folder. By hand, it is the same as:
+
 ```powershell
 git clone https://github.com/ezemacchi/eskills.git
 pwsh -NoProfile -File .\eskills\Install.ps1                    # Cursor
 pwsh -NoProfile -File .\eskills\Install.ps1 -AgentHost claude  # Claude Code
 ```
 
-Then restart the agent and run `/setup`. Without a project pack, `/setup` asks for it (a zip or a folder your team gives you; drag it into the chat or say where it is) and installs it with `add-pack`, which puts it in the clone's `packs\` folder and installs the kit again. git ignores `packs\`, so a private pack kept there is never committed. You can also put packs there yourself before installing, or pass folders elsewhere with `-Pack`.
+Run the same command again to update. Then restart the agent and run `/setup`. Without a project pack, `/setup` asks for it (a zip or a folder your team gives you; drag it into the chat or say where it is) and installs it with `add-pack`, which puts it in the clone's `packs\` folder and installs the kit again. git ignores `packs\`, so a private pack kept there is never committed. You can also put packs there yourself before installing, or pass folders elsewhere with `-Pack`.
 
 **Several projects.** Each project has its own pack, and they are installed side by side. The kit uses the pack whose repositories include the folder it runs in (any clone or worktree of the project), else your default (`/setup` asks), else the only one; each project keeps its own configuration. Adding another project is another `add-pack`.
 
