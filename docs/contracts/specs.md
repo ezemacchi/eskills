@@ -1,7 +1,13 @@
 # specs
 
-The specification files of a ticket: scope, acceptance criteria, scenarios, prototypes. Optional and
-project-specific: a project that keeps specifications in a repository ships a provider in its pack.
+The specification files of a ticket: scope, acceptance criteria, scenarios, prototypes. Optional.
+
+Provider today: `git-files`, in the engine, for specifications kept as files in a git repository.
+Everything about the repository's layout is configuration (`providers.git-files`): the branch and
+root folder, a regular expression that finds the story's code in any text (its named groups are the
+code's parts), how each part is written (`upper`, `pad`, `aliases`), the folder to list and how the
+story's file names start (`folderTemplate`, `fileTemplate`, filled from `{root}` and the parts), and
+the kind of each file (`kinds`, in order). A project sets those values in its pack; it needs no script.
 
 ## Commands
 

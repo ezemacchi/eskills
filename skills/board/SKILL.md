@@ -52,10 +52,11 @@ Say what the story does in plain words, then the key. Do not hand a summary slug
 The spec files (the source of truth for a story: scope, acceptance criteria, non-functional requirements, scenarios, clickable prototypes) are listed by the specification script, when the project has one (the specs capability; `pwsh -NoProfile -File $kit.setup provider -Capability specs` says whether it is on):
 
 ```powershell
-pwsh -NoProfile -File $kit.specs <summary slug, short code like E1_US_18, work-item code, or spec link>
+pwsh -NoProfile -File $kit.specs <the story's code, a text that holds it (its summary), or a link to one of its spec files>
 ```
 
-- One line per file with its kind: `scope`, `acceptance`, `non-functional`, `requirements`, `scenarios`, `prototypes` (start from `_00_index.html`).
+- The project notes (`notes`) say what a story's code looks like and which prototype to open first.
+- One line per file with its kind: `scope`, `acceptance`, `non-functional`, `requirements`, `scenarios`, `prototypes`.
 - Paths printed as `origin/<branch>:<path>` mean the clone has local changes or is on another branch; read them with `git -C <clone> show origin/<branch>:<path>`. Never pull, stash or reset that clone yourself.
 - "Could not reach" means the person is probably off the VPN; say the local copy may be out of date.
 - Exit `1` "No spec files": the story is newer than the clone or the code is wrong. Re-check the code in the Jira description before saying the spec does not exist. Exit `2`: no specification clone; `/setup` step 5 sets one up.

@@ -253,6 +253,25 @@ else {
         if ($chosen -and -not $providerNames[$chosen]) { Add-Result 'kit' "capability $cap" 'fail' "Uses the provider '$chosen', which no provider.json in the kit or the pack names." }
     }
 
+    # A provider configured with regular expressions fails only when a command runs; check them here.
+    function Test-Pattern([string]$Label, [string]$Pattern) {
+        try { return [regex]::new($Pattern) } catch { Add-Result 'kit' $Label 'fail' "Not a valid regular expression: $($_.Exception.InnerException.Message)"; return $null }
+    }
+    if ([string](Get-Prop $defaults 'capabilities.specs.provider') -eq 'git-files') {
+        $gf = Get-Prop $defaults 'providers.git-files'
+        $codeRegex = if ($gf.codePattern) { Test-Pattern 'git-files codePattern' ([string]$gf.codePattern) } else { Add-Result 'kit' 'git-files codePattern' 'fail' 'Empty: the provider cannot find a story code.'; $null }
+        if ($codeRegex) {
+            $codeParts = @(@($codeRegex.GetGroupNames() | Where-Object { $_ -notmatch '^\d+$' }) + 'root')
+            $templateParts = @(foreach ($t in [string]$gf.folderTemplate, [string]$gf.fileTemplate) { [regex]::Matches($t, '\{(\w+)\}') | ForEach-Object { $_.Groups[1].Value } }) | Sort-Object -Unique
+            $unknownParts = @($templateParts | Where-Object { $_ -notin $codeParts })
+            $badKinds = @(@($gf.kinds) | Where-Object { -not $_.kind -or -not $_.match -or -not (Test-Pattern "git-files kind $($_.kind)" ([string]$_.match)) -or ($_.exclude -and -not (Test-Pattern "git-files kind $($_.kind)" ([string]$_.exclude))) })
+            if (-not $gf.fileTemplate) { Add-Result 'kit' 'git-files' 'fail' 'fileTemplate is empty: every file would match.' }
+            elseif ($unknownParts.Count) { Add-Result 'kit' 'git-files' 'fail' "The templates use {$($unknownParts -join '}, {')}, which codePattern has no named group for. Its parts: $($codeParts -join ', ')." }
+            elseif ($badKinds.Count) { Add-Result 'kit' 'git-files' 'fail' 'Every entry of kinds needs kind and match, both valid.' }
+            else { Add-Result 'kit' 'git-files' 'ok' "code parts: $($codeParts -join ', ')" }
+        }
+    }
+
     # Templates: every language has the same texts with the same {{values}}.
     $languages = @($defaults.kit.templateLanguages | Where-Object { $_ })
     $fallback = [string]$defaults.kit.templateFallback
@@ -652,22 +671,47 @@ if ($Fake -and $null -ne $defaults) {
         Invoke-SandboxGit $work @('push', '-q', 'origin', 'main', 'feature/FAKE-3-monthly-report', '--tags')
         Invoke-SandboxGit $sandbox @('clone', '-q', $origin, $clone)
 
+        # A specification repository laid out unlike any real one: the provider must take it all from configuration.
+        $specsOrigin = Join-Path $sandbox 'specs.git'
+        $specsWork = Join-Path $sandbox 'specs-work'
+        $specsClone = Join-Path $sandbox 'specs'
+        Invoke-SandboxGit $sandbox @('init', '-q', '--bare', $specsOrigin)
+        Invoke-SandboxGit $sandbox @('init', '-q', '-b', 'main', $specsWork)
+        Invoke-SandboxGit $specsWork @('config', 'user.name', 'Dana Dev')
+        Invoke-SandboxGit $specsWork @('config', 'user.email', 'dana.dev@example.invalid')
+        New-Item -ItemType Directory -Force -Path (Join-Path $specsWork 'docs\A1') | Out-Null
+        foreach ($specFile in 'A1_ST_007_login.md', 'A1_ST_007_login.ac.md', 'A1_ST_007_login.feature', 'A1_ST_007_notes.txt', 'A1_ST_070_other.md') {
+            Set-Content -LiteralPath (Join-Path $specsWork "docs\A1\$specFile") -Value 'spec'
+        }
+        Invoke-SandboxGit $specsWork @('add', '-A')
+        Invoke-SandboxGit $specsWork @('commit', '-q', '-m', 'Specs')
+        Invoke-SandboxGit $specsWork @('remote', 'add', 'origin', $specsOrigin)
+        Invoke-SandboxGit $specsWork @('push', '-q', 'origin', 'main')
+        Invoke-SandboxGit $sandbox @('clone', '-q', '-b', 'main', $specsOrigin, $specsClone)
+
         New-Item -ItemType Directory -Force -Path $packDir, $state | Out-Null
         $packJson = [ordered]@{
             pack = @{ name = 'fake'; description = 'The fake project, for Test-Kit.ps1 -Fake.' }
             kit = @{ name = $kitName }
-            capabilities = [ordered]@{ board = @{ provider = 'fake' }; repo = @{ provider = 'fake' }; ci = @{ provider = 'fake' }; cd = @{ provider = 'fake' }; chat = @{ provider = 'fake' }; specs = @{ provider = '' } }
+            capabilities = [ordered]@{ board = @{ provider = 'fake' }; repo = @{ provider = 'fake' }; ci = @{ provider = 'fake' }; cd = @{ provider = 'fake' }; chat = @{ provider = 'fake' }; specs = @{ provider = 'git-files' } }
             board = @{ testIssueType = 'Test' }
             brief = @{ followLinks = @('Relates') }
             delivery = @{ qaEnvironment = 'qa' }
-            providers = @{ fake = @{ qualityName = 'Quality' } }
+            providers = [ordered]@{
+                fake        = @{ qualityName = 'Quality' }
+                'git-files' = [ordered]@{
+                    branch = 'main'; root = 'docs'; codePattern = '(?<area>[A-Za-z]\d+)-(?<type>story|task)-(?<num>\d+)'; codeHelp = 'an <area>-story-<n> code'
+                    upper = @('area'); pad = @{ num = 3 }; aliases = @{ type = @{ story = 'ST'; task = 'TK' } }
+                    folderTemplate = '{root}/{area}/'; fileTemplate = '{area}_{type}_{num}_'
+                }
+            }
         }
         Set-Content -LiteralPath (Join-Path $packDir 'pack.json') -Value ($packJson | ConvertTo-Json -Depth 6) -Encoding utf8
         $userConfig = [ordered]@{
             version = 2
             user = [ordered]@{ name = 'Fake Person'; email = 'fake.person@example.invalid'; boardAccountId = 'fake-1'; language = 'en'; role = 'qa'; pullRequests = $true }
             paths = [ordered]@{
-                stateDir = $state; codeRepo = $clone; proposals = (Join-Path $sandbox 'proposals')
+                stateDir = $state; codeRepo = $clone; specsRepo = $specsClone; proposals = (Join-Path $sandbox 'proposals')
                 myPeople = (Join-Path $sandbox 'my-people.md'); myNotes = (Join-Path $sandbox 'my-notes.md')
                 templates = [ordered]@{ brief = (Join-Path $sandbox 'none.md'); nextSteps = (Join-Path $sandbox 'none.md'); boardComments = (Join-Path $sandbox 'none.md'); chatMessages = (Join-Path $sandbox 'none.md') }
             }
@@ -728,6 +772,14 @@ if ($Fake -and $null -ne $defaults) {
         $l = Invoke-Kit $kitScripts.chat @('-To', 'dana', '-Message', 'kit test', '-Json')
         $link = ConvertFrom-KitJson $l.out
         Add-Result 'fake' 'chat link' $(if ($l.code -eq 0 -and $link.prefilled -eq $false) { 'ok' } else { 'fail' }) "prefilled $($link.prefilled) (the fake cannot carry the message, so the skill's paste fallback applies)"
+
+        $s = Invoke-Kit $kitScripts.specs @('Login, a1-story-7 in the summary', '-Json')
+        $spec = if ($s.code -eq 0) { ConvertFrom-KitJson $s.out }
+        $kinds = @($spec.files | ForEach-Object { $_.kind }) -join ' '
+        $wrongFile = @($spec.files | Where-Object { $_.path -notmatch 'A1_ST_007_' }).Count
+        Add-Result 'fake' 'specs files' $(if ($kinds -eq 'scope acceptance scenarios other' -and -not $wrongFile) { 'ok' } else { 'fail' }) "a1-story-7: $(if ($spec) { $kinds } else { "exit $($s.code): $($s.err)" }); expected scope acceptance scenarios other, only A1_ST_007_ files"
+        $sn = Invoke-Kit $kitScripts.specs @('no code here', '-Json')
+        Add-Result 'fake' 'specs no code' $(if ($sn.code -eq 1 -and $sn.err -match 'an <area>-story-<n> code') { 'ok' } else { 'fail' }) "exit $($sn.code): $("$($sn.err)".Trim())"
 
         $guardScript = Join-Path $SkillsRoot "$($defaults.kit.hooks.source)\$(@($defaults.kit.hooks.entries)[0].script)"
         foreach ($agent in 'cursor', 'claude') {

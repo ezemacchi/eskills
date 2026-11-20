@@ -1,0 +1,10 @@
+{
+  "contract": 1,
+  "name": "git-files",
+  "displayName": "Specification files",
+  "capabilities": ["specs"],
+  "script": "Get-GitSpecs.ps1",
+  "commands": ["<story>", "-Check"],
+  "config": ["branch", "root", "codePattern", "codeHelp", "upper", "pad", "aliases", "folderTemplate", "fileTemplate", "kinds"],
+  "secrets": []
+}

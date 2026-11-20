@@ -173,6 +173,25 @@
       "tenantId": "",
       "chatUrl": "https://teams.microsoft.com/l/chat/0/0",
       "maxLinkLength": 6000
+    },
+    "git-files": {
+      "branch": "main",
+      "root": "",
+      "codePattern": "",
+      "codeHelp": "a story code",
+      "upper": [],
+      "pad": {},
+      "aliases": {},
+      "folderTemplate": "{root}/",
+      "fileTemplate": "",
+      "kinds": [
+        { "kind": "scope", "match": "\\.md$", "exclude": "\\.(ac|nfr|ears)\\.md$" },
+        { "kind": "acceptance", "match": "\\.ac\\.md$" },
+        { "kind": "non-functional", "match": "\\.nfr\\.md$" },
+        { "kind": "requirements", "match": "\\.ears\\.md$" },
+        { "kind": "scenarios", "match": "\\.feature$" },
+        { "kind": "prototypes", "match": "\\.html$" }
+      ]
     }
   }
 }
