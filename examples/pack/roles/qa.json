@@ -1,0 +1,30 @@
+{
+  "role": {
+    "title": "QA",
+    "description": "Reviews stories in review, runs their tests and files bugs."
+  },
+  "user": {
+    "pullRequests": false
+  },
+  "board": {
+    "views": [
+      {
+        "id": "stories-in-review",
+        "title": "Stories assigned to me in review",
+        "query": "project = {project} AND assignee = {me} AND status = 'In Review' ORDER BY updated DESC",
+        "fields": ["summary", "status", "updated"],
+        "max": 20,
+        "qaCheckStatuses": [],
+        "linkedTests": true
+      },
+      {
+        "id": "bugs-i-filed",
+        "title": "Bugs I filed, open",
+        "query": "project = {project} AND issuetype = Bug AND reporter = {me} AND statusCategory != Done ORDER BY updated DESC",
+        "fields": ["summary", "status", "assignee", "updated"],
+        "max": 20,
+        "qaCheckStatuses": []
+      }
+    ]
+  }
+}

@@ -24,11 +24,12 @@ When the person says they want a skill to behave or look different, find the row
 
 ## How the configuration works
 
-Three layers, each on top of the one before; a value in a later layer wins, and a list replaces the earlier list:
+Four layers, each on top of the one before; a value in a later layer wins, and a list replaces the earlier list:
 
 - **Kit defaults**: `defaults/config.json` in this skill's folder. Values every project shares. Replaced on every kit update.
-- **The project pack**: `pack/pack.json` in this skill's folder, installed from the project's pack with `Install.ps1 -Pack`. The project's values: which provider each capability uses and its addresses, view presets, the plan's rules. The pack also ships the team's people directory and project notes (`people.md`, `notes.md`), and may ship its own providers, templates and guides; each replaces the kit's file of the same name.
-- **The person's own file**: `%LOCALAPPDATA%\{{kit.name}}\config.json` (or the path in the variable `{{kit.configVar}}`). Holds only what differs for that person.
+- **The project pack**: `pack/pack.json` in this skill's folder, installed from the project's pack with `Install.ps1 -Pack`. What everyone in the project shares: which provider each capability uses and its addresses and patterns, the plan's rules. The pack also ships the team's people directory and project notes (`people.md`, `notes.md`), and may ship templates, guides and, for a service no kit provider covers, its own providers; each replaces the kit's file of the same name.
+- **The role**: `pack/roles/<user.role>.json`, when the pack has roles. What everyone in that role shares: the saved views, whether they work with pull requests. `Install.ps1 -Role <name>` or step 6 sets `user.role`.
+- **The person's own file**: `%LOCALAPPDATA%\{{kit.name}}\config.json` (or the path in the variable `{{kit.configVar}}`). Holds only what differs for that person: usually just their identity and where their clones are.
 
 More:
 
@@ -49,13 +50,14 @@ $kit = (Get-Content -Raw (@($env:{{kit.configVar}}, "$env:LOCALAPPDATA\{{kit.nam
 
 | Command | Does |
 |---|---|
-| `init [-Pack <folder>]` | Creates or refreshes the person's file: points it at these defaults and the pack, moves a version 1 file to version 2 (keeping a copy in `backup\` next to it), records the scripts' paths and each capability's, reports the team and personal files. Safe to re-run. |
+| `init [-Pack <folder>] [-Role <name>]` | Creates or refreshes the person's file: points it at these defaults and the pack, moves a version 1 file to version 2 (keeping a copy in `backup\` next to it), records `-Role` as `user.role`, records the scripts' paths and each capability's, reports the role and the team and personal files. Safe to re-run. |
+| `roles` | The pack's roles: name, title, description, views, the values each sets, and which is the person's (`current`). Empty for a pack without roles. |
 | `provider -Capability <c>` | The provider a capability uses, whether it is on, its folder, and its notes (read them before using a provider-specific command). |
 | `show [-Effective]` | The person's file, or the merged result. |
 | `get -Key a.b` | One merged value. |
 | `set -Key a.b -Value v` | Sets a value. `-AsJson` for a JSON value inline, `-ValueFile <file>` for objects and lists (write the file with the Write tool). Refuses `kit.*` and `version`. |
 | `unset -Key a.b` | Removes the person's value, so the kit default applies again. |
-| `preset -Name <name>` | Copies `board.viewPresets.<name>` into `board.views`. |
+| `preset -Name <name>` | Copies `board.viewPresets.<name>` into `board.views`. For a pack without roles; with roles, `set -Key user.role` instead. |
 | `guides` | Where each writing guide is: the team's and the person's own. |
 | `tools`, `repos`, `env` | Checks: PowerShell 7, git, curl; the configured and found clones; which credential variables are set (never their values). |
 | `set-env -Name -Value` | Sets a user variable that is not a secret. Refuses the token variables. |
@@ -109,16 +111,27 @@ When the ci capability is on: `pwsh -NoProfile -File $kit.ci ping`. Exit `3`: th
 
 ### 6. The person's board
 
-The views decide what the other skills show, so look at the person's real work before choosing them; do not assume a role from a job title.
+The views decide what the other skills show, so they must match the person's real work; do not assume a role from a job title.
+
+`roles` lists the pack's roles (a pack ships one `roles\<name>.json` per role: its title, description, views, and other values such as `user.pullRequests`, listed in `sets`). The role file is read between the pack and the person's own file, so the person gets the team's views for that role without copying them, and later pack updates reach them.
+
+**When the pack has roles:**
+
+1. If the person already has one (`current: true`, set by `Install.ps1 -Role` or an earlier run), run every view (`view -Id <id>`) and show the counts in one short list. Say which role it is (its title), that the views come from the team's pack, and ask only whether they fit. Do not run `discover` when they do.
+2. If the person has none, or says it does not fit: look at their real work (`discover`, and `footprint` for detail, as described below), summarize it in plain words, propose the role whose description matches, then `set -Key user.role -Value <name>` and run the views as in 1.
+3. If the person's own file has `board.views` (an earlier `preset` copied them), those hide the role's. Show both lists; when they are the same, offer `unset -Key board.views` so the role's views apply and follow updates.
+4. A view only this person wants: write the full list with the Write tool and `set -Key board.views -ValueFile <file>`. It replaces the role's list for them, and updates to the role's views stop reaching them; say so. A change the whole role would want belongs in the pack: propose it ("Proposing a change to the kit").
+
+**Looking at the person's work** (a pack without roles, or a role to choose):
 
 1. `pwsh -NoProfile -File $kit.board discover -Days 180 -Json`: who the token is, and each project the person worked in (as assignee or reporter) with its issue types counted, its statuses with their category (todo, inProgress, done), and its boards. Any board provider answers this the same way.
 2. For the detail of who did what in which status, the Jira provider also has `footprint -Days 180 -Json` (counted by project, issue type and status, as assignee and as reporter).
 3. If their main project is not `providers.jira-cloud.project`, ask, then `set -Key providers.jira-cloud.project`. If the project has several boards, ask which one they plan with (`set -Key providers.jira-cloud.board -Value <id> -AsJson`).
-4. Summarize in plain words what they do ("you write test cases: 103 tests in Draft, 2 test sets; you file bugs"), and propose a preset from `board.viewPresets` (the pack's):
+4. Summarize in plain words what they do ("you write test cases: 103 tests in Draft, 2 test sets; you file bugs"), and propose the role (or, in a pack without roles, the preset from `board.viewPresets`) that matches, for example:
    - writes test cases (reporter of tests and test sets): `qa-authoring`;
    - runs tests or reviews stories in QA (assignee of stories in a QA status, of test executions): `qa-execution`;
    - develops (assignee of stories in implementation): `dev`.
-5. `preset -Name <name>`, then run every view (`view -Id <id>`) and show the counts. Offer to adjust: drop a view, change statuses (for example a tests view that should include `Defined`), add one for a status or issue type the footprint showed and no view covers. Write the full list with the Write tool and `set -Key board.views -ValueFile <file>`. A view (`query` is in the board provider's language: JQL for Jira):
+5. In a pack without roles: `preset -Name <name>`, then run every view (`view -Id <id>`) and show the counts. Offer to adjust: drop a view, change statuses (for example a tests view that should include `Defined`), add one for a status or issue type the footprint showed and no view covers. Write the full list with the Write tool and `set -Key board.views -ValueFile <file>`. A view (`query` is in the board provider's language: JQL for Jira):
 
    ```json
    { "id": "tests-draft", "title": "shown to the person", "query": "project = {project} AND reporter = {me} AND status = Draft ORDER BY updated DESC",
@@ -130,11 +143,11 @@ The views decide what the other skills show, so look at the person's real work b
    - `"linkedTests": true` (optional): the brief counts each issue's linked tests by status. Use it for stories the person writes or runs tests for.
    - `title` is shown to the person: write it in their language.
    - Every view must run with exit `0`; exit `1` says "check the JQL".
-6. `set -Key user.role -Value <preset name or a few words>`.
+6. In a pack without roles: `set -Key user.role -Value <preset name or a few words>`.
 
 ### 7. Pull requests
 
-Ask whether they open or review pull requests. `set -Key user.pullRequests -Value true|false -AsJson`. Only when true, and when the repo capability is on, the code host's token is needed (`env` lists it as needed; for Bitbucket Server, `providers.bitbucket-server.tokenVar`): the person creates it in Bitbucket (profile, HTTP access tokens, read access) and saves it with the secret script as in step 3.
+When the person's role sets `user.pullRequests` (`roles` lists it in the role's `sets`), do not ask: say what the role decided, and change it only if the person says otherwise. Otherwise ask whether they open or review pull requests. `set -Key user.pullRequests -Value true|false -AsJson`. Only when true, and when the repo capability is on, the code host's token is needed (`env` lists it as needed; for Bitbucket Server, `providers.bitbucket-server.tokenVar`): the person creates it in Bitbucket (profile, HTTP access tokens, read access) and saves it with the secret script as in step 3.
 
 ### 8. Brief
 

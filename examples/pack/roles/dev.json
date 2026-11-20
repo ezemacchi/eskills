@@ -1,0 +1,21 @@
+{
+  "role": {
+    "title": "Development",
+    "description": "Implements stories and fixes, and opens or reviews pull requests."
+  },
+  "user": {
+    "pullRequests": true
+  },
+  "board": {
+    "views": [
+      {
+        "id": "my-open-issues",
+        "title": "Tickets assigned to me, open",
+        "query": "project = {project} AND assignee = {me} AND statusCategory != Done ORDER BY priority DESC, updated DESC",
+        "fields": ["summary", "status", "priority"],
+        "max": 20,
+        "qaCheckStatuses": []
+      }
+    ]
+  }
+}

@@ -124,7 +124,13 @@ function Get-KitConfig {
     $user = Read-KitJson (Get-KitConfigPath)
     if (-not $user.PSObject.Properties['kit'] -or -not $user.kit.defaultsFile) { Stop-Kit 2 "$(Get-KitConfigPath) does not name kit.defaultsFile. Run /setup." }
     $cfg = Read-KitJson $user.kit.defaultsFile
-    if ($user.kit.PSObject.Properties['packFile'] -and $user.kit.packFile) { $cfg = Merge-KitObject $cfg (Read-KitJson $user.kit.packFile) }
+    if ($user.kit.PSObject.Properties['packFile'] -and $user.kit.packFile) {
+        $cfg = Merge-KitObject $cfg (Read-KitJson $user.kit.packFile)
+        # The person's role: the pack's roles\<user.role>.json, read between the pack and the person.
+        $role = if ($user.PSObject.Properties['user'] -and $user.user -is [Management.Automation.PSCustomObject] -and $user.user.PSObject.Properties['role']) { [string]$user.user.role } else { '' }
+        $roleFile = if ($role -match '^[A-Za-z0-9_-]+$') { Join-Path (Split-Path -Parent $user.kit.packFile) "roles\$role.json" } else { '' }
+        if ($roleFile -and (Test-Path -LiteralPath $roleFile -PathType Leaf)) { $cfg = Merge-KitObject $cfg (Read-KitJson $roleFile) }
+    }
     $cfg = Merge-KitObject $cfg $user
     if ($cfg.version -ne 2) { Stop-Kit 2 "The configuration is version $($cfg.version); these scripts read version 2. Run /setup." }
     $cfg

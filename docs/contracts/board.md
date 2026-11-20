@@ -21,8 +21,8 @@ provider:
   provider fills its placeholders (`{project}`, `{me}`, `{board}` for Jira).
 - `qaCheckStatuses` (`"*"` for every status) and `linkedTests` are read by the brief, not by the
   provider.
-- View presets per role ship in the project pack, keyed by provider, because the query is the
-  provider's language.
+- Views per role ship in the project pack (`roles/<name>.json`, or `board.viewPresets` in a pack
+  without roles), because the query is the provider's language.
 
 ## Commands
 

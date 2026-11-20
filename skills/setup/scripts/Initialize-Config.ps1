@@ -14,18 +14,25 @@
     variable is TEAM_SKILLS_CONFIG. A path value may start with {kitHome}, the folder
     %LOCALAPPDATA%\<kit name>.
 
-    Three layers, read in order, the later winning: the kit's defaults, the project pack's pack.json
-    (kit.packFile), and the user's file. A pack holds a project's values: which provider each
-    capability uses, their addresses, the team's people and notes, view presets, rules. Providers are
-    folders with a provider.json, under kit.providerRoot in the kit and providers\ in the pack.
+    Four layers, read in order, the later winning: the kit's defaults, the project pack's pack.json
+    (kit.packFile), the pack's file for the person's role (roles\<user.role>.json next to pack.json,
+    when the pack has one), and the user's file. A pack holds a project's values: which provider each
+    capability uses, their addresses, the team's people and notes, rules. A role file holds what
+    everyone in that role shares, such as the saved views; because it is read, not copied, a pack
+    update reaches everyone in the role. Providers are folders with a provider.json, under
+    kit.providerRoot in the kit and providers\ in the pack.
 
     Commands (all print JSON):
-      init [-Pack <folder>]    creates or refreshes the user's file: points it at these defaults and
+      init [-Pack <folder>] [-Role <name>]
+                               creates or refreshes the user's file: points it at these defaults and
                                the pack (-Pack, else the pack installed in setup\pack, else the one
                                already recorded), moves a version 1 file to version 2 (a copy is
-                               kept in backup\ next to it), records the kit's scripts and the script
-                               of each capability that is on, and reports the team's people and notes
-                               files next to the user's own
+                               kept in backup\ next to it), records -Role as user.role (one of the
+                               pack's roles), records the kit's scripts and the script of each
+                               capability that is on, and reports the team's people and notes files
+                               next to the user's own
+      roles                    the pack's roles: name, title, description, views, the values each
+                               sets, and which one is the person's
       provider -Capability <c> the provider a capability uses: its manifest, folder and notes
                                (the provider's own reference, when it has one)
       show [-Effective]        the user's file, or the merged result
@@ -33,7 +40,8 @@
       set -Key a.b.c -Value v  sets a value in the user's file; -ValueFile <json file> or -AsJson
                                for objects and lists
       unset -Key a.b.c         removes the user's value, so the kit default applies again
-      preset -Name <name>      copies board.viewPresets.<name> into board.views
+      preset -Name <name>      copies board.viewPresets.<name> into board.views (for a pack without
+                               roles; with roles, set user.role instead)
       tools                    PowerShell, git and curl, and whether each is good enough
       repos [-Apply]           the configured clones of each repository in the configuration's repos
                                list, and every clone of it found on the machine (matched by its
@@ -72,9 +80,10 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory, Position = 0)]
-    [ValidateSet('init', 'show', 'get', 'set', 'unset', 'preset', 'tools', 'repos', 'env', 'set-env', 'changes', 'merged', 'guides', 'propose', 'provider')]
+    [ValidateSet('init', 'show', 'get', 'set', 'unset', 'preset', 'roles', 'tools', 'repos', 'env', 'set-env', 'changes', 'merged', 'guides', 'propose', 'provider')]
     [string] $Command,
     [string] $Pack,
+    [string] $Role,
     [string] $Capability,
     [string] $Skill,
     [string] $Path,
@@ -158,7 +167,13 @@ function Get-KitConfig {
     $user = Read-KitJson (Get-KitConfigPath)
     if (-not $user.PSObject.Properties['kit'] -or -not $user.kit.defaultsFile) { Stop-Kit 2 "$(Get-KitConfigPath) does not name kit.defaultsFile. Run /setup." }
     $cfg = Read-KitJson $user.kit.defaultsFile
-    if ($user.kit.PSObject.Properties['packFile'] -and $user.kit.packFile) { $cfg = Merge-KitObject $cfg (Read-KitJson $user.kit.packFile) }
+    if ($user.kit.PSObject.Properties['packFile'] -and $user.kit.packFile) {
+        $cfg = Merge-KitObject $cfg (Read-KitJson $user.kit.packFile)
+        # The person's role: the pack's roles\<user.role>.json, read between the pack and the person.
+        $role = if ($user.PSObject.Properties['user'] -and $user.user -is [Management.Automation.PSCustomObject] -and $user.user.PSObject.Properties['role']) { [string]$user.user.role } else { '' }
+        $roleFile = if ($role -match '^[A-Za-z0-9_-]+$') { Join-Path (Split-Path -Parent $user.kit.packFile) "roles\$role.json" } else { '' }
+        if ($roleFile -and (Test-Path -LiteralPath $roleFile -PathType Leaf)) { $cfg = Merge-KitObject $cfg (Read-KitJson $roleFile) }
+    }
     $cfg = Merge-KitObject $cfg $user
     if ($cfg.version -ne 2) { Stop-Kit 2 "The configuration is version $($cfg.version); these scripts read version 2. Run /setup." }
     $cfg
@@ -212,6 +227,38 @@ function Save-UserConfig($User) {
 
 function Test-KeyName([string]$Dotted) {
     if ($Dotted -notmatch '^[A-Za-z][A-Za-z0-9_-]*(\.[A-Za-z][A-Za-z0-9_-]*)*$') { Stop-Kit 1 "-Key must look like section.name, got '$Dotted'." }
+}
+
+function Get-LeafKeys($Object, [string]$Prefix) {
+    foreach ($p in $Object.PSObject.Properties) {
+        $k = if ($Prefix) { "$Prefix.$($p.Name)" } else { $p.Name }
+        if ($p.Value -is [Management.Automation.PSCustomObject]) { Get-LeafKeys $p.Value $k } else { $k }
+    }
+}
+
+# The roles a project pack defines: roles\<name>.json next to its pack.json, each read between the pack
+# and the person for whoever has user.role = <name>.
+function Get-PackRoles([string]$PackFile) {
+    if (-not $PackFile) { return }
+    $dir = Join-Path (Split-Path -Parent $PackFile) 'roles'
+    if (-not (Test-Path -LiteralPath $dir -PathType Container)) { return }
+    foreach ($f in Get-ChildItem -LiteralPath $dir -Filter '*.json' -File | Sort-Object Name) {
+        $r = Read-KitJson $f.FullName
+        [pscustomobject]@{
+            name        = $f.BaseName
+            title       = $(if ($r.PSObject.Properties['role']) { [string]$r.role.title } else { '' })
+            description = $(if ($r.PSObject.Properties['role']) { [string]$r.role.description } else { '' })
+            file        = $f.FullName
+            views       = @(@(if ($r.PSObject.Properties['board']) { $r.board.views }) | Where-Object { $_ } | ForEach-Object { [pscustomobject]@{ id = $_.id; title = $_.title } })
+            sets        = @(Get-LeafKeys $r '' | Where-Object { $_ -notlike 'role.*' })
+        }
+    }
+}
+
+function Assert-PackRole([string]$PackFile, [string]$Name) {
+    $known = @(Get-PackRoles $PackFile)
+    if (-not $known.Count) { return }
+    if (-not @($known | Where-Object { $_.name -eq $Name }).Count) { Stop-Kit 1 "No role '$Name' in the pack. Its roles: $(@($known | ForEach-Object { $_.name }) -join ', ')." }
 }
 
 function Set-Dotted($Object, [string]$Dotted, $NewValue) {
@@ -618,6 +665,11 @@ switch ($Command) {
         }
         Set-Dotted $user 'kit.defaultsFile' $DefaultsFile
         if ($packFile) { Set-Dotted $user 'kit.packFile' $packFile } else { [void](Remove-Dotted $user 'kit.packFile') }
+        if ($Role) {
+            if (-not @(Get-PackRoles $packFile).Count) { Stop-Kit 1 "-Role needs a pack with roles (roles\<name>.json next to pack.json)." }
+            Assert-PackRole $packFile $Role
+            Set-Dotted $user 'user.role' $Role
+        }
 
         $scripts = [ordered]@{}
         foreach ($p in $defaults.kit.scripts.PSObject.Properties) {
@@ -670,8 +722,11 @@ switch ($Command) {
         $files += foreach ($g in @(Get-KitGuides $cfg)) {
             [pscustomobject]@{ file = "$($g.name) guide"; team = $g.team; teamOk = $g.teamOk; mine = $g.mine; mineExists = $g.mineExists }
         }
+        $roleName = [string](Get-KitValue $cfg 'user.role')
+        $roleFile = @(Get-PackRoles $packFile | Where-Object { $_.name -eq $roleName } | ForEach-Object { $_.file }) | Select-Object -First 1
         Out-Json ([pscustomobject]@{
                 config = $ConfigPath; created = $created; migratedFrom = $migratedFrom; defaults = $DefaultsFile; pack = $packFile
+                role = $roleName; roleFile = $roleFile
                 skills = $skills; capabilities = @($capabilities); scripts = [pscustomobject]$scripts; files = @($files)
             })
     }
@@ -716,6 +771,7 @@ switch ($Command) {
         }
         elseif ($PSBoundParameters.ContainsKey('Value')) { $new = $Value }
         else { Stop-Kit 1 'set needs -Value or -ValueFile.' }
+        if ($Key -eq 'user.role' -and $new) { Assert-PackRole ([string](Get-KitValue (Get-KitConfig) 'kit.packFile')) ([string]$new) }
         $user = Read-UserConfig
         if ($null -eq $user) { Stop-Kit 2 "No configuration at $ConfigPath. Run init first." }
         Set-Dotted $user $Key $new
@@ -738,13 +794,23 @@ switch ($Command) {
         $cfg = Get-KitConfig
         $views = Get-KitValue $cfg "board.viewPresets.$Name"
         if ($null -eq $views) {
-            $known = @((Get-KitValue $cfg 'board.viewPresets').PSObject.Properties | ForEach-Object { $_.Name }) -join ', '
-            Stop-Kit 1 "No view preset '$Name'. Presets: $known."
+            if (@(Get-PackRoles ([string]$cfg.kit.packFile) | Where-Object { $_.name -eq $Name }).Count) {
+                Stop-Kit 1 "'$Name' is a role of this pack: set -Key user.role -Value $Name. Its views then come from the pack and follow its updates."
+            }
+            $presets = Get-KitValue $cfg 'board.viewPresets'
+            $known = @(if ($presets) { $presets.PSObject.Properties | ForEach-Object { $_.Name } }) -join ', '
+            Stop-Kit 1 "No view preset '$Name'. Presets: $(if ($known) { $known } else { 'none' })."
         }
         $user = Read-UserConfig
         Set-Dotted $user 'board.views' @($views)
         Save-UserConfig $user
         Out-Json ([pscustomobject]@{ preset = $Name; views = @($views | ForEach-Object { [pscustomobject]@{ id = $_.id; title = $_.title } }) })
+    }
+
+    'roles' {
+        $cfg = Get-KitConfig
+        $mine = [string](Get-KitValue $cfg 'user.role')
+        Out-Json @(Get-PackRoles ([string]$cfg.kit.packFile) | ForEach-Object { $_ | Add-Member -NotePropertyName current -NotePropertyValue ($_.name -eq $mine) -PassThru })
     }
 
     'tools' {

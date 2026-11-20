@@ -1,7 +1,7 @@
 {
   "pack": {
     "name": "example",
-    "description": "An invented project: Jira Cloud, Bitbucket Server, Jenkins and Teams, with no cd or specs provider."
+    "description": "An invented project: Jira Cloud, Bitbucket Server, Jenkins, Teams and specification files in a git repository, with no cd provider. Only values: no scripts."
   },
   "kit": {
     "name": "example-skills",
@@ -23,7 +23,7 @@
     "ci": { "provider": "jenkins" },
     "cd": { "provider": "", "enabled": false },
     "chat": { "provider": "teams" },
-    "specs": { "provider": "" }
+    "specs": { "provider": "git-files" }
   },
   "user": {
     "language": "en"
@@ -34,41 +34,17 @@
       "name": "app",
       "cloneUrl": "https://git.acme.invalid/scm/exa/app.git",
       "uses": "the pull-request sections"
+    },
+    {
+      "path": "paths.specsRepo",
+      "name": "app-specs",
+      "cloneUrl": "https://git.acme.invalid/scm/exa/app-specs.git",
+      "uses": "story specification files",
+      "capability": "specs"
     }
   ],
   "board": {
-    "testIssueType": "Test",
-    "viewPresets": {
-      "qa": [
-        {
-          "id": "stories-in-review",
-          "title": "Stories assigned to me in review",
-          "query": "project = {project} AND assignee = {me} AND status = 'In Review' ORDER BY updated DESC",
-          "fields": ["summary", "status", "updated"],
-          "max": 20,
-          "qaCheckStatuses": [],
-          "linkedTests": true
-        },
-        {
-          "id": "bugs-i-filed",
-          "title": "Bugs I filed, open",
-          "query": "project = {project} AND issuetype = Bug AND reporter = {me} AND statusCategory != Done ORDER BY updated DESC",
-          "fields": ["summary", "status", "assignee", "updated"],
-          "max": 20,
-          "qaCheckStatuses": []
-        }
-      ],
-      "dev": [
-        {
-          "id": "my-open-issues",
-          "title": "Tickets assigned to me, open",
-          "query": "project = {project} AND assignee = {me} AND statusCategory != Done ORDER BY priority DESC, updated DESC",
-          "fields": ["summary", "status", "priority"],
-          "max": 20,
-          "qaCheckStatuses": []
-        }
-      ]
-    }
+    "testIssueType": "Test"
   },
   "brief": {
     "followLinks": ["Relates"]
@@ -98,6 +74,15 @@
     },
     "teams": {
       "tenantId": "00000000-0000-0000-0000-000000000000"
+    },
+    "git-files": {
+      "branch": "main",
+      "root": "docs/specs",
+      "codePattern": "(?i)\\b(?<project>EXA)-(?<num>\\d+)\\b",
+      "codeHelp": "a ticket key like EXA-42",
+      "upper": ["project"],
+      "folderTemplate": "{root}/",
+      "fileTemplate": "{project}-{num}-"
     }
   }
 }

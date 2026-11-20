@@ -34,9 +34,11 @@ A capability the project does not have is off, and whatever needs it does not ap
 ## Install or update
 
 ```powershell
-pwsh -NoProfile -File .\Install.ps1 -Pack <the project's pack folder>                   # Cursor
-pwsh -NoProfile -File .\Install.ps1 -AgentHost claude -Pack <the project's pack folder> # Claude Code
+pwsh -NoProfile -File .\Install.ps1 -Pack <the project's pack folder> -Role <role>                   # Cursor
+pwsh -NoProfile -File .\Install.ps1 -AgentHost claude -Pack <the project's pack folder> -Role <role> # Claude Code
 ```
+
+`-Role` is optional: one of the pack's roles (`roles\<name>.json`). With it, the person starts with their role's views and settings, and `/setup` only asks for their credentials and confirms the rest. Without it, `/setup` looks at their work on the board and proposes a role.
 
 It copies the skills to the agent's skills folder (`.cursor\skills` or `.claude\skills`), with the pack inside the setup skill (`setup\pack`). A skill whose capability the pack turns off is not installed, and a kit skill a new version no longer ships is moved to a backup. A folder with the same name that is not the kit's stops the install; `-Force` moves it to a backup first. Updating a kit installed with a pack needs `-Pack` again. Then, in the agent, start a new chat or session and run `/setup`.
 
@@ -48,11 +50,12 @@ Updating keeps the person's configuration, people and notes, and any kit file th
 
 ## Where things live
 
-The configuration has three layers, each winning over the one before:
+The configuration has four layers, each winning over the one before:
 
 - **Kit values**: `skills/setup/defaults/config.json`. What every project shares (providers start unchosen). Replaced on update.
-- **Project values**: the pack's `pack.json` (installed in `setup\pack`). Which provider each capability uses, their addresses and ids (under `providers.<name>`), view presets, the planner's rules. The pack also brings the team's people and notes (`people.md`, `notes.md`) and its own providers.
-- **The person's values**: `%LOCALAPPDATA%\<kit name>\config.json`. Only what differs for them: identity, clones, views, a capability they do not use.
+- **Project values**: the pack's `pack.json` (installed in `setup\pack`). What everyone in the project shares: which provider each capability uses, their addresses, ids and patterns (under `providers.<name>`), the planner's rules. The pack also brings the team's people and notes (`people.md`, `notes.md`).
+- **Role values**: the pack's `roles\<user.role>.json`. What everyone in one role shares: the saved views, whether they work with pull requests. Read, not copied, so a pack update reaches everyone in the role.
+- **The person's values**: `%LOCALAPPDATA%\<kit name>\config.json`. Only what differs for them: usually their identity and where their clones are.
 
 And:
 
@@ -66,9 +69,10 @@ And:
 
 A pack is a folder with:
 
-- `pack.json`: the kit's name for this project (`kit.name`), the provider of each capability, their values under `providers.<name>`, the repositories to find (`repos`), view presets (`board.viewPresets`), the planner's rules (`chief.rules`), the test environment (`delivery.qaEnvironment`), and lint patterns that keep the project's values out of the kit;
+- `pack.json`: the kit's name for this project (`kit.name`), the provider of each capability, their values under `providers.<name>`, the repositories to find (`repos`), the planner's rules (`chief.rules`), the test environment (`delivery.qaEnvironment`), and lint patterns that keep the project's values out of the kit;
+- `roles/<name>.json`, one per role in the project: a title and description for `/setup` (`role.title`, `role.description`) and the values everyone in that role shares, usually `board.views` and `user.pullRequests`. A pack without roles can ship view presets instead (`board.viewPresets`), which `/setup` copies into each person's file;
 - `people.md` and `notes.md`: the team and what the skills need to know about the project;
-- optionally `providers/<capability>/<name>/` for providers only this project uses, and `templates/` or `guides/` files that replace the kit's.
+- optionally `templates/` or `guides/` files that replace the kit's, and `providers/<capability>/<name>/` for a service no kit provider covers. Prefer configuring a kit provider: most of what makes a project different (a code pattern, a log line, an address) is a value, and a pack with only values is just configuration.
 
 [`examples/pack`](examples/pack) is a complete example with invented values. Keep a real pack private: it holds internal addresses and the team's e-mails.
 

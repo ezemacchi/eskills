@@ -54,11 +54,16 @@
     kit. A skill whose capability the pack turns off ("enabled": false) is not installed. Updating a
     kit installed with a pack needs -Pack again.
 
+.PARAMETER Role
+    The person's role in the project: one of the pack's roles (roles\<name>.json in the pack). The
+    role's values, such as the saved views, are read between the pack and the person's own file, so
+    /setup only has to confirm them. Recorded as user.role; an update without -Role keeps it.
+
 .PARAMETER Force
     Move a same-named folder that is not the kit's to <StateRoot>\backup.
 
 .EXAMPLE
-    pwsh -NoProfile -File .\Install.ps1 -Pack ..\my-project-pack
+    pwsh -NoProfile -File .\Install.ps1 -Pack ..\my-project-pack -Role qa
 #>
 [CmdletBinding()]
 param(
@@ -68,6 +73,7 @@ param(
     [string] $HooksFile,
     [string] $StateRoot,
     [string] $Pack,
+    [string] $Role,
     [switch] $Force
 )
 
@@ -98,7 +104,15 @@ if ($Pack) {
     $packJson = Join-Path $packDir 'pack.json'
     if (-not (Test-Path -LiteralPath $packJson -PathType Leaf)) { Write-Host "Not installed: there is no pack.json in $packDir."; exit 1 }
     $defaults = Merge-KitObject $defaults (Get-Content -Raw -Encoding utf8 -LiteralPath $packJson | ConvertFrom-Json)
+    if ($Role) {
+        $roles = @(Get-ChildItem -LiteralPath (Join-Path $packDir 'roles') -Filter '*.json' -File -ErrorAction SilentlyContinue | ForEach-Object { $_.BaseName })
+        if ($Role -notin $roles) {
+            Write-Host "Not installed: the pack has no role '$Role'. $(if ($roles.Count) { "Its roles: $($roles -join ', ')." } else { 'It defines no roles (roles\<name>.json).' })"
+            exit 1
+        }
+    }
 }
+elseif ($Role) { Write-Host 'Not installed: -Role needs -Pack, the project pack that defines the roles.'; exit 1 }
 elseif (Test-Path -LiteralPath (Join-Path $Target 'setup\pack\pack.json') -PathType Leaf) {
     Write-Host "Not installed: the kit in $Target was installed with a project pack (setup\pack). Run again with -Pack <the pack's folder>, so the update keeps it."
     exit 1
@@ -383,8 +397,10 @@ if ($hostEntries.Count) {
 }
 
 if (Get-Command pwsh -ErrorAction SilentlyContinue) {
-    & pwsh -NoProfile -File (Join-Path $Target 'setup\scripts\Initialize-Config.ps1') init | Out-Null
-    if ($LASTEXITCODE -eq 0) { Write-Host 'Configuration refreshed.' }
+    $initArgs = @('init') + $(if ($Role) { @('-Role', $Role) } else { @() })
+    & pwsh -NoProfile -File (Join-Path $Target 'setup\scripts\Initialize-Config.ps1') @initArgs | Out-Null
+    if ($LASTEXITCODE -eq 0) { Write-Host $(if ($Role) { "Configuration refreshed, with the role $Role." } else { 'Configuration refreshed.' }) }
+    else { Write-Host "The configuration was not refreshed (Initialize-Config.ps1 init answered $LASTEXITCODE); /setup step 2 shows why." }
     Write-Host $(if ($AgentHost -eq 'claude') { 'Next: in Claude Code, start a new session and run /setup.' } else { 'Next: in Cursor, open a new chat and run /setup.' })
 }
 else {
