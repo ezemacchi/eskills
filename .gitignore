@@ -1,1 +1,5 @@
 *.tmp
+
+# A project's pack is private (internal addresses, the team's e-mails). Keep it in packs\<name>\, where
+# Install.ps1 finds it and git never picks it up.
+packs/

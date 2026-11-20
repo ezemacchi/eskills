@@ -38,6 +38,8 @@ pwsh -NoProfile -File .\Install.ps1 -Pack <the project's pack folder> -Role <rol
 pwsh -NoProfile -File .\Install.ps1 -AgentHost claude -Pack <the project's pack folder> -Role <role> # Claude Code
 ```
 
+The simplest place for a project's pack is this repository's `packs\` folder (`packs\<name>\pack.json`): git ignores it, so a private pack kept there is never committed, and `Install.ps1` without `-Pack` uses the one it finds there.
+
 `-Role` is optional: one or more of the pack's roles (`roles\<name>.json`), separated by commas, the main one first (`-Role dev,qa`). With it, the person starts with their roles' views and settings, and `/setup` only asks for their credentials and confirms the rest. Without it, `/setup` looks at their work on the board and proposes roles.
 
 It copies the skills to the agent's skills folder (`.cursor\skills` or `.claude\skills`), with the pack inside the setup skill (`setup\pack`). A skill whose capability the pack turns off is not installed, and a kit skill a new version no longer ships is moved to a backup. A folder with the same name that is not the kit's stops the install; `-Force` moves it to a backup first. Updating a kit installed with a pack needs `-Pack` again. Then, in the agent, start a new chat or session and run `/setup`.

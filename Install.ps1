@@ -49,10 +49,11 @@
 
 .PARAMETER Pack
     A project pack: a folder with pack.json (the project's values: which provider each capability
-    uses, addresses, rules, presets), the team's people.md and notes.md, and its own providers. It is
-    copied into the setup skill (setup\pack), so the installed kit carries it; its kit.name names the
-    kit. A skill whose capability the pack turns off ("enabled": false) is not installed. Updating a
-    kit installed with a pack needs -Pack again.
+    uses, addresses, rules, roles), the team's people.md and notes.md. It is copied into the setup
+    skill (setup\pack), so the installed kit carries it; its kit.name names the kit. A skill whose
+    capability the pack turns off ("enabled": false) is not installed. Updating a kit installed with
+    a pack needs the pack again. Without -Pack, the one pack in this repository's packs\ folder is
+    used (git ignores that folder, so a private pack kept there is never committed).
 
 .PARAMETER Role
     The person's roles in the project: one or more of the pack's roles (roles\<name>.json in the
@@ -65,7 +66,8 @@
     Move a same-named folder that is not the kit's to <StateRoot>\backup.
 
 .EXAMPLE
-    pwsh -NoProfile -File .\Install.ps1 -Pack ..\my-project-pack -Role qa
+    pwsh -NoProfile -File .\Install.ps1
+    With the project's pack in packs\<name>\.
 .EXAMPLE
     pwsh -NoProfile -File .\Install.ps1 -Pack ..\my-project-pack -Role dev,qa
 #>
@@ -103,6 +105,11 @@ $hostPlaces = $defaults.kit.agentHosts.$AgentHost
 if (-not $Target) { $Target = Join-Path $env:USERPROFILE ([string]$hostPlaces.skills) }
 if (-not $HooksFile) { $HooksFile = Join-Path $env:USERPROFILE ([string]$hostPlaces.hooksFile) }
 $packDir = $null
+if (-not $Pack) {
+    $kept = @(Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'packs') -Directory -ErrorAction SilentlyContinue | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'pack.json') -PathType Leaf })
+    if ($kept.Count -gt 1) { Write-Host "Not installed: packs\ holds several packs ($(($kept | ForEach-Object { $_.Name }) -join ', ')). Pass -Pack <folder> to say which."; exit 1 }
+    if ($kept.Count -eq 1) { $Pack = $kept[0].FullName; Write-Host "Using the project pack in packs\$($kept[0].Name)." }
+}
 if ($Pack) {
     $packDir = [IO.Path]::GetFullPath($Pack)
     $packJson = Join-Path $packDir 'pack.json'
