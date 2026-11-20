@@ -9,9 +9,9 @@ provider script and reads its JSON. A provider implements one capability for one
 | board | tickets: saved views, one ticket and its links, comments, moving a ticket | Jira Cloud | [board.md](board.md) |
 | repo | pull requests, their checks, quality report, merge check, the merge commit of a pull request | Bitbucket Server | [repo.md](repo.md) |
 | ci | builds: status, stages, log, find a build | Jenkins | [ci.md](ci.md) |
-| cd | environments: which version each runs, which commit a version is | a project's own publisher | [cd.md](cd.md) |
+| cd | environments: which version each runs, which commit a version is | Jenkins publish and deployment jobs (`jenkins-deploy`) | [cd.md](cd.md) |
 | chat | people and a message ready to send, which the person sends | Microsoft Teams | [chat.md](chat.md) |
-| specs | the specification files of a ticket | a project's own repository | [specs.md](specs.md) |
+| specs | the specification files of a ticket | files in a git repository (`git-files`) | [specs.md](specs.md) |
 
 [delivery.md](delivery.md) is not a capability: it is the engine's answer to "does environment X have
 the change of ticket K, and if not, from which version will it", built from board, repo, cd and git.
