@@ -5,8 +5,13 @@ environment's versions are built from, which commit a version is, which branches
 the last publishes. Optional: the brief's environment versions, its QA column and the delivery check
 need it.
 
-Provider today: a project's own publisher, in that project's pack. Other
-services that fit: Argo CD applications, Azure DevOps environments, GitHub or GitLab deployments.
+Provider today: `jenkins-deploy`, in the engine, for projects that publish versions with Jenkins
+jobs and upgrade environments with a deployment job. What is particular to a project is configuration
+(`providers.jenkins-deploy`): the publish jobs and their branches, the deployment job, regular
+expressions for the lines of its log that name each environment's version (`deployLog`), for the
+version in an environment's own address (`liveVersion`) and in a publish run's name
+(`buildNameVersion`), and the environments. Other services that fit: Argo CD applications, Azure
+DevOps environments, GitHub or GitLab deployments.
 
 ## Commands
 

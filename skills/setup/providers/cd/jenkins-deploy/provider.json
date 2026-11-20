@@ -1,0 +1,10 @@
+{
+  "contract": 1,
+  "name": "jenkins-deploy",
+  "displayName": "Jenkins",
+  "capabilities": ["cd"],
+  "script": "Invoke-JenkinsDeploy.ps1",
+  "commands": ["environments", "targets", "commit-of", "publishes"],
+  "config": ["root", "publish", "publisher", "deployLog", "liveVersion", "buildNameVersion", "versionParameter", "chartUrl", "instances", "instancesNote"],
+  "secrets": []
+}

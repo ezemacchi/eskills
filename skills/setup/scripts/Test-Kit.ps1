@@ -271,6 +271,24 @@ else {
             else { Add-Result 'kit' 'git-files' 'ok' "code parts: $($codeParts -join ', ')" }
         }
     }
+    if ([string](Get-Prop $defaults 'capabilities.cd.provider') -eq 'jenkins-deploy') {
+        $jd = Get-Prop $defaults 'providers.jenkins-deploy'
+        $needs = [ordered]@{ 'deployLog.instanceLine' = @('name', 'version'); 'deployLog.targetLine' = @('name'); 'deployLog.runningLine' = @('version'); liveVersion = @('version'); buildNameVersion = @('version') }
+        $set = 0
+        foreach ($key in $needs.Keys) {
+            $pattern = [string](Get-Prop $jd $key)
+            if (-not $pattern) { continue }
+            $set++
+            $rx = Test-Pattern "jenkins-deploy $key" $pattern
+            if (-not $rx) { continue }
+            $absent = @($needs[$key] | Where-Object { $_ -notin $rx.GetGroupNames() })
+            if ($absent.Count) { Add-Result 'kit' "jenkins-deploy $key" 'fail' "Needs the named group(s) $($absent -join ', '): (?<$($absent[0])>...)." }
+            else { Add-Result 'kit' "jenkins-deploy $key" 'ok' }
+        }
+        $publishJobs = Get-Prop $jd 'publish'
+        if (-not $publishJobs -or -not @($publishJobs.PSObject.Properties).Count) { Add-Result 'kit' 'jenkins-deploy publish' 'fail' 'No publish jobs: targets and publishes have nothing to read.' }
+        if (-not $set) { Add-Result 'kit' 'jenkins-deploy' 'warn' 'No patterns set: environment versions cannot be read (deployLog, liveVersion).' }
+    }
 
     # Templates: every language has the same texts with the same {{values}}.
     $languages = @($defaults.kit.templateLanguages | Where-Object { $_ })
